@@ -9,3 +9,4 @@ class SSHConfig:
 
     permit_root_login: str
     password_authentication: bool
+    permit_empty_passwords: bool

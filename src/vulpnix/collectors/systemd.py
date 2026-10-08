@@ -1,5 +1,6 @@
 """Read-only systemd service collection."""
 
+import shutil
 import subprocess
 
 from vulpnix.models import Service
@@ -8,8 +9,12 @@ from vulpnix.parsers.systemd import enabled_value, parse_loaded_services, parse_
 
 def _run_systemctl(*arguments: str) -> str:
     """Run a fixed, read-only systemctl query without invoking a shell."""
+    systemctl = shutil.which("systemctl", path="/usr/bin:/bin:/usr/sbin:/sbin")
+    if systemctl is None:
+        raise FileNotFoundError("systemctl is not installed")
+
     result = subprocess.run(
-        ["/usr/bin/systemctl", "--system", *arguments],
+        [systemctl, "--system", *arguments],
         check=True,
         capture_output=True,
         text=True,

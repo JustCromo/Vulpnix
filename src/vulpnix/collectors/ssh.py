@@ -8,13 +8,13 @@ from vulpnix.parsers.ssh import parse_ssh_config
 
 
 def collect_ssh_config() -> SSHConfig:
-    """Read effective global SSH login options using sshd's test mode."""
-    sshd = shutil.which("sshd", path="/usr/sbin:/usr/bin")
+    """Read effective global SSH login options without validating host keys."""
+    sshd = shutil.which("sshd", path="/usr/sbin:/usr/bin:/sbin:/bin")
     if sshd is None:
         raise FileNotFoundError("sshd is not installed")
 
     result = subprocess.run(
-        [sshd, "-T"],
+        [sshd, "-G"],
         check=True,
         capture_output=True,
         text=True,

@@ -10,6 +10,7 @@ import sys
 from vulpnix.collectors import collect_services, collect_ssh_config, collect_system_info
 from vulpnix.models import SSHConfig, Service, SystemInfo
 from vulpnix import __version__
+from vulpnix.findings import Finding
 from vulpnix.cli.terminal import (
     accent,
     alternate_screen,
@@ -19,6 +20,7 @@ from vulpnix.cli.terminal import (
     read_key,
     terminal_size,
 )
+from vulpnix.rules import check_ssh_empty_passwords, check_ssh_root_login
 
 
 _FOX_ART = (
@@ -175,9 +177,25 @@ def _show_ssh_config(config: SSHConfig) -> None:
         "forced-commands-only": "restricted key login only",
     }[config.permit_root_login]
     password_auth = "yes" if config.password_authentication else "no"
+    empty_passwords = "yes" if config.permit_empty_passwords else "no"
     print(f"  Root login:       {root_login}")
     print(f"  Password method:  {password_auth}")
+    print(f"  Empty passwords:  {empty_passwords}")
     print("  Values are global sshd options; Match rules may vary by connection.")
+
+
+def _show_findings(findings: tuple[Finding, ...]) -> None:
+    print(f"\n{accent('FINDINGS')}")
+    if not findings:
+        print("  No SSH root-login finding.")
+        return
+
+    for finding in findings:
+        print(f"  [REVIEW] {finding.title}")
+        print(f"  Rule:           {finding.rule_id}")
+        print(f"  Evidence:       {finding.evidence}")
+        print(f"  Why it matters: {finding.explanation}")
+        print(f"  Suggested step: {finding.recommendation}")
 
 
 def _ssh_error_message(error: Exception) -> str:
@@ -186,7 +204,7 @@ def _ssh_error_message(error: Exception) -> str:
     if isinstance(error, subprocess.TimeoutExpired):
         return "sshd did not return configuration in time."
     if isinstance(error, subprocess.CalledProcessError):
-        return "sshd could not validate its configuration or host keys."
+        return "sshd -G could not print the effective configuration."
     if isinstance(error, (UnicodeError, ValueError)):
         return "sshd returned unreadable configuration data."
     return "SSH configuration is unavailable."
@@ -218,6 +236,11 @@ def _show_scan() -> None:
         print(f"  Unavailable: {_ssh_error_message(error)}")
     else:
         _show_ssh_config(ssh_config)
+        findings = (
+            *check_ssh_root_login(ssh_config),
+            *check_ssh_empty_passwords(ssh_config),
+        )
+        _show_findings(findings)
 
     print("\nThese are configuration facts, not a complete access test or risk score.")
 
