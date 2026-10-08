@@ -1,13 +1,24 @@
 """Interactive command shell for Vulpnix."""
 
 from collections.abc import Callable
+from contextlib import redirect_stdout
 from dataclasses import dataclass
+import io
 import subprocess
+import sys
 
 from vulpnix.collectors import collect_services, collect_ssh_config, collect_system_info
 from vulpnix.models import SSHConfig, Service, SystemInfo
 from vulpnix import __version__
-from vulpnix.cli.terminal import accent, alternate_screen, clear_screen
+from vulpnix.cli.terminal import (
+    accent,
+    alternate_screen,
+    clip_ansi_line,
+    clear_screen,
+    raw_input_mode,
+    read_key,
+    terminal_size,
+)
 
 
 _FOX_ART = (
@@ -254,17 +265,179 @@ def _dispatch_command(command_name: str) -> bool:
     return True
 
 
-def run_shell() -> None:
-    """Run the interactive Vulpnix command shell."""
-    _show_presentation()
+class _TerminalCapture(io.StringIO):
+    """Capture printed output while preserving terminal-aware styling."""
 
+    def isatty(self) -> bool:
+        return True
+
+
+def _capture_output(callback: Callable[[], object]) -> tuple[object, str]:
+    capture = _TerminalCapture()
+    with redirect_stdout(capture):
+        result = callback()
+    return result, capture.getvalue()
+
+
+def _append_output(lines: list[str], output: str) -> None:
+    clear_sequence = "\033[2J\033[H"
+    if clear_sequence in output:
+        lines.clear()
+        output = output.replace(clear_sequence, "")
+    if output:
+        lines.extend(output.splitlines())
+
+
+def _render_shell(
+    lines: list[str], command_line: str, cursor: int, scroll_offset: int
+) -> None:
+    columns, rows = terminal_size()
+    rows = max(rows, 1)
+    page_height = max(rows - 1, 0)
+    visible_end = max(0, len(lines) - scroll_offset)
+    visible_start = max(0, visible_end - page_height)
+    visible_lines = lines[visible_start:visible_end]
+
+    prompt = f"{accent('vulpnix>', bold=True)} "
+    frame = [clip_ansi_line(line, columns) for line in visible_lines]
+    prompt_row = min(len(frame), rows - 1)
+    frame.insert(prompt_row, prompt + command_line)
+    frame.extend("" for _ in range(rows - len(frame)))
+
+    output = ["\033[H"]
+    for row_number, line in enumerate(frame[:rows]):
+        output.extend((line, "\033[K"))
+        if row_number < rows - 1:
+            output.append("\r\n")
+
+    prompt_column = len("vulpnix> ") + cursor + 1
+    output.append(f"\033[{prompt_row + 1};{prompt_column}H")
+    sys.stdout.write("".join(output))
+    sys.stdout.flush()
+
+
+def _read_command(
+    lines: list[str], history: list[str], scroll_offset: int
+) -> tuple[str, int]:
+    command_line = ""
+    cursor = 0
+    history_position = len(history)
+    saved_line = ""
+
+    while True:
+        _render_shell(lines, command_line, cursor, scroll_offset)
+        key = read_key()
+
+        if key.startswith("\033[<"):
+            try:
+                button = int(key[3:].split(";", maxsplit=1)[0])
+            except ValueError:
+                continue
+            if button & 64:
+                columns, rows = terminal_size()
+                page_height = max(rows - 1, 1)
+                max_offset = max(0, len(lines) - page_height)
+                direction = 1 if button & 1 == 0 else -1
+                scroll_offset = min(max_offset, max(0, scroll_offset + direction * 3))
+            continue
+
+        if key in {"\r", "\n"}:
+            return command_line.strip(), 0
+        if key == "\x03":
+            raise KeyboardInterrupt
+        if key == "\x04":
+            if not command_line:
+                raise EOFError
+            command_line = command_line[:cursor] + command_line[cursor + 1 :]
+            continue
+        if key in {"\x7f", "\x08"}:
+            if cursor:
+                command_line = command_line[: cursor - 1] + command_line[cursor:]
+                cursor -= 1
+            continue
+        if key == "\x01":
+            cursor = 0
+            continue
+        if key == "\x05":
+            cursor = len(command_line)
+            continue
+        if key == "\033[D":
+            cursor = max(0, cursor - 1)
+            continue
+        if key == "\033[C":
+            cursor = min(len(command_line), cursor + 1)
+            continue
+        if key in {"\033[H", "\033[1~"}:
+            cursor = 0
+            continue
+        if key in {"\033[F", "\033[4~"}:
+            cursor = len(command_line)
+            continue
+        if key == "\033[3~":
+            command_line = command_line[:cursor] + command_line[cursor + 1 :]
+            continue
+        if key == "\033[A" and history_position > 0:
+            if history_position == len(history):
+                saved_line = command_line
+            history_position -= 1
+            command_line = history[history_position]
+            cursor = len(command_line)
+            continue
+        if key == "\033[B":
+            if history_position < len(history):
+                history_position += 1
+                command_line = (
+                    history[history_position]
+                    if history_position < len(history)
+                    else saved_line
+                )
+                cursor = len(command_line)
+            continue
+        if len(key) == 1 and key.isprintable():
+            command_line = command_line[:cursor] + key + command_line[cursor:]
+            cursor += len(key)
+
+
+def _run_interactive_shell() -> None:
+    output_lines: list[str] = []
+    history: list[str] = []
+    _, presentation = _capture_output(_show_presentation)
+    _append_output(output_lines, presentation)
+
+    with raw_input_mode():
+        while True:
+            try:
+                command, _ = _read_command(output_lines, history, 0)
+            except (EOFError, KeyboardInterrupt):
+                _append_output(output_lines, "\nExiting Vulpnix.\n")
+                _render_shell(output_lines, "", 0, 0)
+                return
+
+            entered = f"{accent('vulpnix>', bold=True)} {command}"
+            output_lines.append(entered)
+            if command:
+                history.append(command)
+
+            keep_running, output = _capture_output(lambda: _dispatch_command(command))
+            _append_output(output_lines, output)
+            if not keep_running:
+                _render_shell(output_lines, "", 0, 0)
+                return
+
+
+def run_shell() -> None:
+    """Run Vulpnix with mouse-wheel scrolling in an interactive terminal."""
+    if sys.stdin.isatty() and sys.stdout.isatty():
+        _run_interactive_shell()
+        return
+
+    _show_presentation()
     while True:
         try:
             command = input(f"{accent('vulpnix>', bold=True)} ").strip()
         except (EOFError, KeyboardInterrupt):
             print("\nExiting Vulpnix.")
             return
-
         if not _dispatch_command(command):
             return
 
