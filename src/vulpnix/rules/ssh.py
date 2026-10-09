@@ -50,3 +50,49 @@ def check_ssh_empty_passwords(config: SSHConfig) -> tuple[Finding, ...]:
             ),
         ),
     )
+
+
+def check_ssh_password_authentication(config: SSHConfig) -> tuple[Finding, ...]:
+    """Flag password-based SSH login for administrator review."""
+    if not config.password_authentication:
+        return ()
+
+    return (
+        Finding(
+            rule_id="SSH-PASSWORD-AUTH-001",
+            title="SSH password authentication is enabled",
+            evidence="Global PasswordAuthentication: yes",
+            explanation=(
+                "Password-based SSH login is enabled globally. Its risk depends "
+                "on the host's access controls, password policy, and exposure. "
+                "Match rules may change the effective result for a connection."
+            ),
+            recommendation=(
+                "Review whether password login is required; consider key-based "
+                "authentication and any additional access controls in use."
+            ),
+        ),
+    )
+
+
+def check_ssh_public_key_authentication(config: SSHConfig) -> tuple[Finding, ...]:
+    """Flag disabled public-key SSH authentication for administrator review."""
+    if config.public_key_authentication:
+        return ()
+
+    return (
+        Finding(
+            rule_id="SSH-PUBKEY-AUTH-001",
+            title="SSH public-key authentication is disabled",
+            evidence="Global PubkeyAuthentication: no",
+            explanation=(
+                "Public-key SSH authentication is disabled globally. This may be "
+                "intentional, but it removes a commonly used login method. Match "
+                "rules may change the effective result for a connection."
+            ),
+            recommendation=(
+                "Confirm that this is intentional and that the remaining SSH "
+                "authentication methods meet the host's access requirements."
+            ),
+        ),
+    )

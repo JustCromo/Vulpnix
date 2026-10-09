@@ -8,6 +8,7 @@ import subprocess
 import sys
 
 from vulpnix.collectors import collect_services, collect_ssh_config, collect_system_info
+from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
 from vulpnix.models import SSHConfig, Service, SystemInfo
 from vulpnix import __version__
 from vulpnix.findings import Finding
@@ -16,11 +17,19 @@ from vulpnix.cli.terminal import (
     alternate_screen,
     clip_ansi_line,
     clear_screen,
+    display_width,
     raw_input_mode,
     read_key,
     terminal_size,
+    wrap_text,
 )
-from vulpnix.rules import check_ssh_empty_passwords, check_ssh_root_login
+from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
+from vulpnix.rules import (
+    check_ssh_empty_passwords,
+    check_ssh_password_authentication,
+    check_ssh_public_key_authentication,
+    check_ssh_root_login,
+)
 
 
 _FOX_ART = (
@@ -44,6 +53,8 @@ _FOX_ART = (
 )
 _PRESENTATION_INDENT = "    "
 _TITLE_BOX_WIDTH = 34
+_OUTPUT_LAYOUT_CACHE: tuple[int, int, int, str, list[str]] | None = None
+_SECTION_WIDTH = 48
 
 
 @dataclass(frozen=True)
@@ -65,6 +76,10 @@ def _show_help() -> None:
         for command in _COMMANDS:
             if command.group == group_name:
                 print(f"  {command.name:<8} {command.description}")
+                if command.name == "scan":
+                    print("  scan host  Host facts only")
+                    print("  scan service  Services and startup state")
+                    print("  scan ssh  SSH assessment only")
 
 
 def _show_version() -> None:
@@ -99,6 +114,13 @@ def _display_value(value: str | None) -> str:
     return safe_value
 
 
+def _section(title: str) -> None:
+    """Print a consistent, compact section heading."""
+    rule_width = min(max(terminal_size()[0], 1), _SECTION_WIDTH)
+    print(f"\n{accent(title, bold=True)}")
+    print(f"{'─' * rule_width}")
+
+
 def _format_uptime(seconds: float | None) -> str:
     if seconds is None:
         return "Unavailable"
@@ -115,17 +137,30 @@ def _format_uptime(seconds: float | None) -> str:
     return " ".join(parts)
 
 
-def _show_system_info(info: SystemInfo) -> None:
+def _show_system_info(info: SystemInfo, title: str = "SYSTEM") -> None:
     distribution = _display_value(info.distribution)
     if info.distribution_version:
         distribution += f" ({_display_value(info.distribution_version)})"
 
-    print(f"\n{accent('HOST FACTS')}")
-    print(f"  Host:         {_display_value(info.hostname)}")
-    print(f"  Distribution: {distribution}")
-    print(f"  Kernel:       {_display_value(info.kernel_release)}")
-    print(f"  Architecture: {_display_value(info.architecture)}")
-    print(f"  Uptime:       {_format_uptime(info.uptime_seconds)}")
+    _section(title)
+    print(f"  {'Host':<16} {_display_value(info.hostname)}")
+    print(f"  {'Distribution':<16} {distribution}")
+    print(f"  {'Kernel':<16} {_display_value(info.kernel_release)}")
+    print(f"  {'Architecture':<16} {_display_value(info.architecture)}")
+    print(f"  {'Uptime':<16} {_format_uptime(info.uptime_seconds)}")
+
+
+def _show_host_assessment(title: str = "SYSTEM") -> bool:
+    """Collect and show host facts, returning whether collection succeeded."""
+    try:
+        system_info = collect_system_info()
+    except NotImplementedError:
+        _section(title)
+        print("Host facts are supported on Linux only.")
+        return False
+
+    _show_system_info(system_info, title)
+    return True
 
 
 def _show_services(services: tuple[Service, ...]) -> None:
@@ -136,17 +171,23 @@ def _show_services(services: tuple[Service, ...]) -> None:
     disabled = sum(service.enabled is False for service in services)
     unknown_enabled = len(services) - enabled - disabled
 
-    print(f"\n{accent('SYSTEMD SERVICES')}")
-    print(f"  Units:   {len(services)}")
-    print(f"  State:   {active} active · {inactive} inactive · {other_state} other/unknown")
-    print(f"  Enabled: {enabled} yes · {disabled} no · {unknown_enabled} unknown")
+    _section("SERVICES")
+    print(f"  {'Units':<16} {len(services)}")
+    print(
+        f"  {'State':<16} {active} active · {inactive} inactive · "
+        f"{other_state} other/unknown"
+    )
+    print(
+        f"  {'Startup enabled':<16} {enabled} yes · {disabled} no · "
+        f"{unknown_enabled} unknown"
+    )
 
     review_services = tuple(
         service
         for service in services
         if service.state == "active" and service.unit_file_state == "enabled"
     )
-    print(f"\n{accent('ACTIVE AT STARTUP')}")
+    print(f"\n{accent('ACTIVE AT STARTUP', bold=True)}")
     if not review_services:
         print("  No active, startup-enabled services found.")
         return
@@ -168,8 +209,20 @@ def _service_error_message(error: Exception) -> str:
     return "systemd service data is unavailable."
 
 
+def _show_service_assessment() -> None:
+    """Collect systemd service state and startup information."""
+    try:
+        services = collect_services()
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        _section("SERVICES")
+        print(f"  Unavailable: {_service_error_message(error)}")
+    else:
+        _show_services(services)
+
+
 def _show_ssh_config(config: SSHConfig) -> None:
-    print(f"\n{accent('SSH LOGIN OPTIONS')}")
+    _section("SSH")
+    print(f"  {accent('GLOBAL LOGIN OPTIONS', bold=True)}")
     root_login = {
         "yes": "yes",
         "no": "no",
@@ -178,24 +231,31 @@ def _show_ssh_config(config: SSHConfig) -> None:
     }[config.permit_root_login]
     password_auth = "yes" if config.password_authentication else "no"
     empty_passwords = "yes" if config.permit_empty_passwords else "no"
-    print(f"  Root login:       {root_login}")
-    print(f"  Password method:  {password_auth}")
-    print(f"  Empty passwords:  {empty_passwords}")
+    public_key_auth = "yes" if config.public_key_authentication else "no"
+    print(f"  {'Option':<27} Value")
+    print(f"  {'─' * 27} {'─' * 10}")
+    print(f"  {'Root login':<27} {root_login}")
+    print(f"  {'Password authentication':<27} {password_auth}")
+    print(f"  {'Public-key authentication':<27} {public_key_auth}")
+    print(f"  {'Permit empty passwords':<27} {empty_passwords}")
     print("  Values are global sshd options; Match rules may vary by connection.")
 
 
-def _show_findings(findings: tuple[Finding, ...]) -> None:
-    print(f"\n{accent('FINDINGS')}")
+def _show_findings(findings: tuple[Finding, ...]) -> int:
+    _section("FINDINGS")
     if not findings:
-        print("  No SSH root-login finding.")
-        return
+        print("  No SSH findings.")
+        return 0
 
     for finding in findings:
-        print(f"  [REVIEW] {finding.title}")
+        print(f"\n  [REVIEW] {finding.title}")
         print(f"  Rule:           {finding.rule_id}")
         print(f"  Evidence:       {finding.evidence}")
-        print(f"  Why it matters: {finding.explanation}")
-        print(f"  Suggested step: {finding.recommendation}")
+        print("  Why it matters:")
+        print(f"    {finding.explanation}")
+        print("  Recommendation:")
+        print(f"    {finding.recommendation}")
+    return len(findings)
 
 
 def _ssh_error_message(error: Exception) -> str:
@@ -203,6 +263,14 @@ def _ssh_error_message(error: Exception) -> str:
         return "OpenSSH server (sshd) is not installed."
     if isinstance(error, subprocess.TimeoutExpired):
         return "sshd did not return configuration in time."
+    if isinstance(error, SSHGUnsupportedError):
+        detail = _ssh_command_detail(error)
+        return (
+            "sshd -G is not supported by this OpenSSH installation."
+            f"{detail}"
+        )
+    if isinstance(error, SSHCommandError):
+        return f"sshd -G failed{_ssh_command_detail(error)}."
     if isinstance(error, subprocess.CalledProcessError):
         return "sshd -G could not print the effective configuration."
     if isinstance(error, (UnicodeError, ValueError)):
@@ -210,39 +278,148 @@ def _ssh_error_message(error: Exception) -> str:
     return "SSH configuration is unavailable."
 
 
-def _show_scan() -> None:
-    """Collect host facts and identify active services enabled at boot."""
-    print(f"\n{accent('HOST INVENTORY')}")
-    try:
-        system_info = collect_system_info()
-    except NotImplementedError:
-        print("Host facts are supported on Linux only.")
-        return
+def _ssh_command_detail(error: SSHCommandError) -> str:
+    if not error.diagnostic:
+        return f" (exit {error.returncode})"
+    detail = "".join(
+        character if character.isprintable() else "�"
+        for character in error.diagnostic
+    )
+    return f" (exit {error.returncode}: {detail})"
 
-    _show_system_info(system_info)
 
-    try:
-        services = collect_services()
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        print(f"\n{accent('SYSTEMD SERVICES')}")
-        print(f"  Unavailable: {_service_error_message(error)}")
-    else:
-        _show_services(services)
-
+def _show_ssh_assessment() -> int:
+    """Collect global SSH options and display their current findings."""
     try:
         ssh_config = collect_ssh_config()
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        print(f"\n{accent('SSH LOGIN OPTIONS')}")
-        print(f"  Unavailable: {_ssh_error_message(error)}")
-    else:
-        _show_ssh_config(ssh_config)
-        findings = (
-            *check_ssh_root_login(ssh_config),
-            *check_ssh_empty_passwords(ssh_config),
+        _section("SSH")
+        print(f"  {accent('GLOBAL LOGIN OPTIONS', bold=True)}")
+        status = (
+            "NOT ASSESSED / Unavailable"
+            if isinstance(error, SSHGUnsupportedError)
+            else "Unavailable"
         )
-        _show_findings(findings)
+        print(f"  {status}: {_ssh_error_message(error)}")
+        return 0
 
-    print("\nThese are configuration facts, not a complete access test or risk score.")
+    _show_ssh_config(ssh_config)
+    findings = _ssh_findings(ssh_config)
+    return _show_findings(findings)
+
+
+def _ssh_findings(ssh_config: SSHConfig) -> tuple[Finding, ...]:
+    """Run the existing SSH checks and return their findings unchanged."""
+    return (
+        *check_ssh_root_login(ssh_config),
+        *check_ssh_password_authentication(ssh_config),
+        *check_ssh_empty_passwords(ssh_config),
+        *check_ssh_public_key_authentication(ssh_config),
+    )
+
+
+def _service_report_section(services: tuple[Service, ...]) -> ReportSection:
+    active = sum(service.state == "active" for service in services)
+    inactive = sum(service.state == "inactive" for service in services)
+    other_state = len(services) - active - inactive
+    enabled = sum(service.enabled is True for service in services)
+    disabled = sum(service.enabled is False for service in services)
+    unknown_enabled = len(services) - enabled - disabled
+    startup_services = tuple(
+        _display_value(service.name)
+        for service in services
+        if service.state == "active" and service.unit_file_state == "enabled"
+    )
+    if startup_services:
+        items = startup_services
+    else:
+        items = ("No active, startup-enabled services found.",)
+    return ReportSection(
+        title="SERVICES",
+        facts=(
+            ("Units", str(len(services))),
+            ("State", f"{active} active · {inactive} inactive · {other_state} other/unknown"),
+            ("Startup enabled", f"{enabled} yes · {disabled} no · {unknown_enabled} unknown"),
+        ),
+        items=items,
+        items_label=(
+            "Active now and enabled to start at boot:" if startup_services else None
+        ),
+    )
+
+
+def _ssh_report_section(config: SSHConfig) -> ReportSection:
+    root_login = {
+        "yes": "yes",
+        "no": "no",
+        "prohibit-password": "key login only",
+        "forced-commands-only": "restricted key login only",
+    }[config.permit_root_login]
+    return ReportSection(
+        title="SSH",
+        table=(
+            ("Root login", root_login),
+            ("Password authentication", "yes" if config.password_authentication else "no"),
+            ("Public-key authentication", "yes" if config.public_key_authentication else "no"),
+            ("Empty passwords", "yes" if config.permit_empty_passwords else "no"),
+        ),
+        footer="Values are global sshd options; Match rules may vary by connection.",
+    )
+
+
+def _show_scan() -> None:
+    """Collect existing assessment data and render a structured report."""
+    try:
+        system_info = collect_system_info()
+    except NotImplementedError:
+        report = ScanReport(
+            host=None,
+            host_message="Host facts are supported on Linux only.",
+            sections=(),
+            findings=(),
+            scope=("system facts", "services", "SSH configuration"),
+        )
+        print("\n".join(render_scan_report(report, terminal_size()[0])))
+        return
+
+    service_section: ReportSection
+    try:
+        services = collect_services()
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        service_section = ReportSection(
+            title="SERVICES",
+            message=_service_error_message(error),
+            status="Unavailable",
+        )
+    else:
+        service_section = _service_report_section(services)
+
+    findings: tuple[Finding, ...] = ()
+    ssh_section: ReportSection
+    try:
+        ssh_config = collect_ssh_config()
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        status = (
+            "NOT ASSESSED / Unavailable"
+            if isinstance(error, SSHGUnsupportedError)
+            else "Unavailable"
+        )
+        ssh_section = ReportSection(
+            title="SSH",
+            status=status,
+            message=_ssh_error_message(error),
+        )
+    else:
+        ssh_section = _ssh_report_section(ssh_config)
+        findings = _ssh_findings(ssh_config)
+
+    report = ScanReport(
+        host=system_info,
+        sections=(service_section, ssh_section),
+        findings=findings,
+        scope=("system facts", "services", "SSH configuration"),
+    )
+    print("\n".join(render_scan_report(report, terminal_size()[0])))
 
 
 def _show_presentation() -> None:
@@ -265,15 +442,65 @@ _COMMANDS = (
     Command("help", "GENERAL", "Commands", _show_help),
     Command("info", "GENERAL", "About", _show_info),
     Command("version", "GENERAL", "Version", _show_version),
-    Command("scan", "ASSESSMENT", "Collect host facts", _show_scan),
+    Command("scan", "ASSESSMENT", "Full Linux assessment", _show_scan),
     Command("clear", "SESSION", "Refresh screen", _clear_screen),
     Command("exit", "SESSION", "Quit", None),
 )
 _COMMANDS_BY_NAME = {command.name: command for command in _COMMANDS}
+_COMPLETIONS = (
+    "help",
+    "info",
+    "version",
+    "scan",
+    "scan host",
+    "scan service",
+    "scan ssh",
+    "clear",
+    "exit",
+)
+
+
+def _command_completions(prefix: str) -> tuple[str, ...]:
+    """Return Vulpnix commands matching the text before the cursor."""
+    candidates = _COMPLETIONS
+    if prefix == "scan":
+        candidates = tuple(item for item in candidates if item != "scan")
+    elif prefix.startswith("scan "):
+        candidates = tuple(item for item in candidates if item.startswith("scan "))
+    return tuple(item for item in candidates if item.startswith(prefix))
+
+
+def _common_completion(candidates: tuple[str, ...]) -> str:
+    if not candidates:
+        return ""
+    common = candidates[0]
+    for candidate in candidates[1:]:
+        length = 0
+        for left, right in zip(common, candidate):
+            if left != right:
+                break
+            length += 1
+        common = common[:length]
+    return common
 
 
 def _dispatch_command(command_name: str) -> bool:
     """Dispatch one known command; return False when the shell should exit."""
+    parts = command_name.split()
+    if parts and parts[0] == "scan":
+        if parts == ["scan", "host"]:
+            _show_host_assessment("HOST DETAILS")
+            return True
+        if parts == ["scan", "service"]:
+            _show_service_assessment()
+            return True
+        if parts == ["scan", "ssh"]:
+            _show_ssh_assessment()
+            return True
+        if len(parts) > 1:
+            print("Usage: scan [host|service|ssh]")
+            return True
+
     command = _COMMANDS_BY_NAME.get(command_name)
     if command is None:
         if command_name:
@@ -303,7 +530,10 @@ def _capture_output(callback: Callable[[], object]) -> tuple[object, str]:
 
 
 def _append_output(lines: list[str], output: str) -> None:
+    global _OUTPUT_LAYOUT_CACHE
     clear_sequence = "\033[2J\033[H"
+    if output or clear_sequence in output:
+        _OUTPUT_LAYOUT_CACHE = None
     if clear_sequence in output:
         lines.clear()
         output = output.replace(clear_sequence, "")
@@ -311,21 +541,79 @@ def _append_output(lines: list[str], output: str) -> None:
         lines.extend(output.splitlines())
 
 
+def _fit_output_to_width(lines: list[str], width: int) -> list[str]:
+    """Reflow captured output to the current terminal width."""
+    global _OUTPUT_LAYOUT_CACHE
+    width = max(width, 1)
+    last_line = lines[-1] if lines else ""
+    cache_key = (id(lines), width, len(lines), last_line)
+    if _OUTPUT_LAYOUT_CACHE is not None:
+        cached_id, cached_width, cached_count, cached_last, cached_lines = (
+            _OUTPUT_LAYOUT_CACHE
+        )
+        if cache_key == (cached_id, cached_width, cached_count, cached_last):
+            return cached_lines
+
+    fitted: list[str] = []
+    for line in lines:
+        if not line:
+            fitted.append("")
+            continue
+        if "\033[" in line:
+            fitted.append(clip_ansi_line(line, width))
+            continue
+
+        leading = line[: len(line) - len(line.lstrip())]
+        content = line[len(leading) :]
+        label_end = content.find(": ")
+        if label_end >= 0:
+            first_prefix = leading + content[: label_end + 2]
+            if display_width(first_prefix) < width // 2:
+                wrapped = wrap_text(
+                    content[label_end + 2 :],
+                    initial_indent=first_prefix,
+                    subsequent_indent=" " * display_width(first_prefix),
+                    width=width,
+                )
+                fitted.extend(clip_ansi_line(part, width) for part in wrapped)
+                continue
+
+        wrapped = wrap_text(
+            content,
+            initial_indent=leading,
+            subsequent_indent=leading + "  ",
+            width=width,
+        )
+        fitted.extend(clip_ansi_line(part, width) for part in wrapped)
+    _OUTPUT_LAYOUT_CACHE = (*cache_key, fitted)
+    return fitted
+
+
 def _render_shell(
-    lines: list[str], command_line: str, cursor: int, scroll_offset: int
+    lines: list[str],
+    command_line: str,
+    cursor: int,
+    scroll_offset: int,
+    suggestions: tuple[str, ...] = (),
 ) -> None:
     columns, rows = terminal_size()
     rows = max(rows, 1)
-    page_height = max(rows - 1, 0)
-    visible_end = max(0, len(lines) - scroll_offset)
+    visible_suggestions = suggestions[: max(rows - 2, 0)]
+    page_height = max(rows - 1 - len(visible_suggestions), 0)
+    display_lines = _fit_output_to_width(lines, columns)
+    visible_end = max(0, len(display_lines) - scroll_offset)
     visible_start = max(0, visible_end - page_height)
-    visible_lines = lines[visible_start:visible_end]
+    visible_lines = display_lines[visible_start:visible_end]
 
     prompt = f"{accent('vulpnix>', bold=True)} "
-    frame = [clip_ansi_line(line, columns) for line in visible_lines]
+    prompt = clip_ansi_line(prompt, columns)
+    prompt_width = min(len("vulpnix> "), columns)
+    frame = visible_lines[:]
+    displayed_command = clip_ansi_line(command_line, max(columns - prompt_width, 0))
     prompt_row = min(len(frame), rows - 1)
-    frame.insert(prompt_row, prompt + command_line)
-    frame.extend("" for _ in range(rows - len(frame)))
+    frame.insert(prompt_row, prompt + displayed_command)
+    frame.extend("" for _ in range(rows - len(frame) - len(visible_suggestions)))
+    frame.extend(clip_ansi_line(line, columns) for line in visible_suggestions)
 
     output = ["\033[H"]
     for row_number, line in enumerate(frame[:rows]):
@@ -333,7 +621,7 @@ def _render_shell(
         if row_number < rows - 1:
             output.append("\r\n")
 
-    prompt_column = len("vulpnix> ") + cursor + 1
+    prompt_column = min(prompt_width + cursor + 1, max(columns, 1))
     output.append(f"\033[{prompt_row + 1};{prompt_column}H")
     sys.stdout.write("".join(output))
     sys.stdout.flush()
@@ -346,11 +634,58 @@ def _read_command(
     cursor = 0
     history_position = len(history)
     saved_line = ""
+    pending_tab: tuple[str, tuple[str, ...]] | None = None
+    completion_suggestions: tuple[str, ...] = ()
 
     while True:
-        _render_shell(lines, command_line, cursor, scroll_offset)
-        key = read_key()
+        _render_shell(
+            lines, command_line, cursor, scroll_offset, completion_suggestions
+        )
+        rendered_size = terminal_size()
+        while True:
+            key = read_key(timeout=0.2)
+            if key is not None or terminal_size() != rendered_size:
+                break
+        if key is None:
+            continue
 
+        if key == "\t":
+            prefix = command_line[:cursor]
+            candidates = _command_completions(prefix)
+            if pending_tab == (prefix, candidates) and candidates:
+                completion_suggestions = (
+                    accent("SUGGESTIONS"),
+                    *(f"  {item}" for item in candidates),
+                )
+                pending_tab = None
+                continue
+
+            if not candidates:
+                pending_tab = None
+                continue
+
+            common = _common_completion(candidates)
+            if common != prefix:
+                completed = common
+                if len(candidates) == 1 and common == candidates[0]:
+                    completed += " "
+                command_line = completed + command_line[cursor:]
+                cursor = len(completed)
+                new_prefix = command_line[:cursor]
+                new_candidates = _command_completions(new_prefix)
+                pending_tab = (
+                    (new_prefix, new_candidates) if len(new_candidates) > 1 else None
+                )
+            elif len(candidates) == 1 and candidates[0] == prefix:
+                command_line = prefix + " " + command_line[cursor:]
+                cursor += 1
+                pending_tab = None
+            else:
+                pending_tab = (prefix, candidates)
+            continue
+
+        pending_tab = None
+        completion_suggestions = ()
         if key.startswith("\033[<"):
             try:
                 button = int(key[3:].split(";", maxsplit=1)[0])
@@ -359,9 +694,11 @@ def _read_command(
             if button & 64:
                 columns, rows = terminal_size()
                 page_height = max(rows - 1, 1)
-                max_offset = max(0, len(lines) - page_height)
+                max_offset = max(
+                    0, len(_fit_output_to_width(lines, columns)) - page_height
+                )
                 direction = 1 if button & 1 == 0 else -1
-                scroll_offset = min(max_offset, max(0, scroll_offset + direction * 3))
+                scroll_offset = min(max_offset, max(0, scroll_offset + direction))
             continue
 
         if key in {"\r", "\n"}:

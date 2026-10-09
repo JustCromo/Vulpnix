@@ -12,21 +12,26 @@ def parse_ssh_config(output: str) -> SSHConfig:
             "permitrootlogin",
             "passwordauthentication",
             "permitemptypasswords",
+            "pubkeyauthentication",
         }:
             options[fields[0].lower()] = fields[1].strip().lower()
 
     root_login = options.get("permitrootlogin")
     password_auth = options.get("passwordauthentication")
     empty_passwords = options.get("permitemptypasswords")
+    public_key_auth = options.get("pubkeyauthentication")
     if root_login not in {"yes", "no", "prohibit-password", "forced-commands-only"}:
         raise ValueError("sshd did not return a valid PermitRootLogin value")
     if password_auth not in {"yes", "no"}:
         raise ValueError("sshd did not return a valid PasswordAuthentication value")
     if empty_passwords not in {"yes", "no"}:
         raise ValueError("sshd did not return a valid PermitEmptyPasswords value")
+    if public_key_auth not in {"yes", "no"}:
+        raise ValueError("sshd did not return a valid PubkeyAuthentication value")
 
     return SSHConfig(
         permit_root_login=root_login,
         password_authentication=password_auth == "yes",
         permit_empty_passwords=empty_passwords == "yes",
+        public_key_authentication=public_key_auth == "yes",
     )

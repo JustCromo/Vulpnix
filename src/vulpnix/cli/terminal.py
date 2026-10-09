@@ -59,9 +59,14 @@ def raw_input_mode() -> Iterator[None]:
         termios.tcsetattr(file_descriptor, termios.TCSADRAIN, previous_settings)
 
 
-def read_key() -> str:
-    """Read one key, preserving escape sequences used for keys and mouse."""
+def read_key(timeout: float | None = None) -> str | None:
+    """Read one key, optionally returning after a timeout."""
     file_descriptor = sys.stdin.fileno()
+    if timeout is not None and not select.select(
+        [file_descriptor], [], [], timeout
+    )[0]:
+        return None
+
     character = os.read(file_descriptor, 1).decode("utf-8", errors="replace")
     if character != "\033":
         return character
@@ -79,6 +84,89 @@ def terminal_size() -> tuple[int, int]:
     """Return terminal width and height, with a useful fallback."""
     size = shutil.get_terminal_size((80, 24))
     return size.columns, size.lines
+
+
+def display_width(text: str) -> int:
+    """Measure printable terminal cells, excluding ANSI control sequences."""
+    visible = _ANSI_SEQUENCE.sub("", text)
+    return sum(
+        0
+        if unicodedata.combining(character)
+        else 2
+        if unicodedata.east_asian_width(character) in {"W", "F"}
+        else 1
+        for character in visible
+    )
+
+
+def wrap_text(
+    text: str,
+    width: int,
+    *,
+    initial_indent: str = "",
+    subsequent_indent: str | None = None,
+) -> list[str]:
+    """Wrap text by words to terminal-cell width, splitting only overlong tokens."""
+    width = max(1, width)
+    subsequent_indent = (
+        initial_indent if subsequent_indent is None else subsequent_indent
+    )
+
+    def fit_indent(indent: str) -> str:
+        fitted: list[str] = []
+        columns = 0
+        for character in indent:
+            char_width = display_width(character)
+            if columns + char_width >= width:
+                break
+            fitted.append(character)
+            columns += char_width
+        return "".join(fitted)
+
+    first_indent = fit_indent(initial_indent)
+    next_indent = fit_indent(subsequent_indent)
+
+    def split_token(token: str, available: int) -> list[str]:
+        pieces: list[str] = []
+        piece = ""
+        columns = 0
+        for character in token:
+            char_width = display_width(character)
+            if piece and columns + char_width > available:
+                pieces.append(piece)
+                piece = ""
+                columns = 0
+            piece += character
+            columns += char_width
+        if piece:
+            pieces.append(piece)
+        return pieces
+
+    lines: list[str] = []
+    indent = first_indent
+    line = indent
+    line_has_text = False
+    tokens = text.split()
+    for token in tokens:
+        available = max(width - display_width(next_indent), 1)
+        pieces = split_token(token, available)
+        for piece_index, piece in enumerate(pieces):
+            continuation = piece_index > 0
+            separator = " " if line_has_text and not continuation else ""
+            if display_width(line + separator + piece) <= width:
+                line += separator + piece
+                line_has_text = True
+                continue
+
+            if line_has_text:
+                lines.append(line)
+            indent = next_indent
+            line = indent + piece
+            line_has_text = True
+
+    if line_has_text or not lines:
+        lines.append(line.rstrip())
+    return lines
 
 
 def clip_ansi_line(line: str, width: int) -> str:
