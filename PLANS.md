@@ -113,7 +113,7 @@ failure cases are tested.
 
 ### M3 — Users & Privileges
 
-**Status: NEXT**
+**Status: IN PROGRESS — Iteration 1 implemented; Iteration 2 pending design.**
 
 **Purpose:** Assess Linux users, privileged accounts, and privilege-related
 security configuration.
@@ -281,7 +281,7 @@ Vulpnix Core
 |---|---|---|
 | M1 | Foundation | COMPLETE |
 | M2 | Host & SSH Security Assessment | COMPLETE |
-| M3 | Users & Privileges | NEXT |
+| M3 | Users & Privileges | IN PROGRESS |
 | M4 | Filesystem Security | PLANNED |
 | M5 | Network Exposure | PLANNED |
 | M6 | Packages & CVE | PLANNED |
@@ -302,5 +302,4 @@ Vulpnix Core
 7. Never turn missing information into a security conclusion.
 8. Update this roadmap when status/objectives materially change.
 
-**Current next milestone: M3 — Users & Privileges.**
-
+**Current active milestone: M3 — Users & Privileges.**

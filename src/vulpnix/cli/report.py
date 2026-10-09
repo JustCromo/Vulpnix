@@ -8,6 +8,15 @@ from vulpnix.models import SystemInfo
 
 
 @dataclass(frozen=True)
+class ReportBlock:
+    """A labeled presentation block with prose lines and named lists."""
+
+    title: str
+    lines: tuple[str, ...] = ()
+    lists: tuple[tuple[str, tuple[str, ...]], ...] = ()
+
+
+@dataclass(frozen=True)
 class ReportSection:
     """Presentation data for one independently collected assessment area."""
 
@@ -19,6 +28,7 @@ class ReportSection:
     status: str | None = None
     items_label: str | None = None
     footer: str | None = None
+    blocks: tuple[ReportBlock, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -104,7 +114,8 @@ def _finding_status(finding: Finding) -> str:
     return str(getattr(status, "value", status))
 
 
-def _render_section(section: ReportSection, width: int) -> list[str]:
+def render_report_section(section: ReportSection, width: int) -> list[str]:
+    """Render one structured section without collecting or assessing data."""
     title_lines = _wrap(section.title, width)
     lines = [accent(line, bold=True) for line in title_lines]
     if section.status:
@@ -141,6 +152,17 @@ def _render_section(section: ReportSection, width: int) -> list[str]:
         lines.extend(_wrap(f"• {item}", width - 4, indent="  "))
     if section.footer:
         lines.extend(_wrap(section.footer, width - 2, indent="  "))
+    for block in section.blocks:
+        lines.extend(("", accent(block.title, bold=True)))
+        for line in block.lines:
+            lines.extend(_wrap(line, width - 2, indent="  "))
+        for label, items in block.lists:
+            lines.extend(_wrap(label, width - 2, indent="  "))
+            if items:
+                for item in items:
+                    lines.extend(_wrap(f"• {item}", width - 4, indent="    "))
+            else:
+                lines.extend(_wrap("None identified.", width - 4, indent="    "))
     return lines
 
 
@@ -205,9 +227,9 @@ def render_scan_report(report: ScanReport, width: int) -> list[str]:
             "SYSTEM", message=report.host_message or "Host facts unavailable."
         )
 
-    lines.extend(_render_section(system_section, width))
+    lines.extend(render_report_section(system_section, width))
     for section in report.sections:
-        lines.extend(_render_section(section, width))
+        lines.extend(render_report_section(section, width))
 
     lines.extend(("", *_finding_details(report.findings, width), ""))
     lines.append(accent("SUMMARY", bold=True))

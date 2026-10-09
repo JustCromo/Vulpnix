@@ -7,9 +7,14 @@ import io
 import subprocess
 import sys
 
-from vulpnix.collectors import collect_services, collect_ssh_config, collect_system_info
+from vulpnix.collectors import (
+    collect_local_users,
+    collect_services,
+    collect_ssh_config,
+    collect_system_info,
+)
 from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
-from vulpnix.models import SSHConfig, Service, SystemInfo
+from vulpnix.models import SSHConfig, Service, SystemInfo, User
 from vulpnix import __version__
 from vulpnix.findings import Finding
 from vulpnix.cli.terminal import (
@@ -23,7 +28,13 @@ from vulpnix.cli.terminal import (
     terminal_size,
     wrap_text,
 )
-from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
+from vulpnix.cli.report import (
+    ReportBlock,
+    ReportSection,
+    ScanReport,
+    render_report_section,
+    render_scan_report,
+)
 from vulpnix.rules import (
     check_ssh_empty_passwords,
     check_ssh_password_authentication,
@@ -78,6 +89,8 @@ def _show_help() -> None:
                 print(f"  {command.name:<8} {command.description}")
                 if command.name == "scan":
                     print("  scan host  Host facts only")
+                    print("  scan users  Local user and group inventory")
+                    print("  scan users --details  Include the complete account inventory")
                     print("  scan service  Services and startup state")
                     print("  scan ssh  SSH assessment only")
 
@@ -207,6 +220,129 @@ def _service_error_message(error: Exception) -> str:
     if isinstance(error, (UnicodeError, ValueError)):
         return "systemd returned unreadable service data."
     return "systemd service data is unavailable."
+
+
+def _user_report_section(
+    users: tuple[User, ...], *, detailed: bool = False
+) -> ReportSection:
+    uid_zero = sum(user.uid == 0 for user in users)
+    known_privileged = sum(user.privileged is True for user in users)
+    privilege_unknown = sum(user.privileged is None for user in users)
+    group_unavailable = sum(user.groups is None for user in users)
+    account_state_unavailable = sum(user.account_state is None for user in users)
+    uid_zero_users = tuple(user for user in users if user.uid == 0)
+    additional_uid_zero = tuple(
+        user for user in uid_zero_users if user.username != "root"
+    )
+    privileged_users = tuple(user for user in users if user.privileged is True)
+    assessment: list[str] = []
+    if not uid_zero_users:
+        assessment.append("No UID 0 accounts detected")
+    elif not additional_uid_zero:
+        assessment.append("✓ Only one UID 0 account detected: root")
+    else:
+        assessment.append(
+            "Additional UID 0 accounts detected: "
+            + ", ".join(user.username for user in additional_uid_zero)
+        )
+    if known_privileged:
+        assessment.append(
+            f"✓ Privileged access verified for {known_privileged} "
+            f"{'account' if known_privileged == 1 else 'accounts'}"
+        )
+    else:
+        assessment.append("No privileged access verified through UID 0")
+
+    review: list[str] = []
+    if additional_uid_zero:
+        review.append(
+            "Review authorization for additional UID 0 accounts: "
+            + ", ".join(user.username for user in additional_uid_zero)
+        )
+    if privilege_unknown:
+        review.append(
+            f"{privilege_unknown} "
+            f"{'account could' if privilege_unknown == 1 else 'accounts could'} "
+            "not be evaluated for privilege status"
+        )
+    if account_state_unavailable:
+        review.append(
+            f"{account_state_unavailable} "
+            f"{'account could' if account_state_unavailable == 1 else 'accounts could'} "
+            "not be evaluated for account state"
+        )
+    if group_unavailable:
+        review.append(
+            f"Group membership unavailable for {group_unavailable} "
+            f"{'account' if group_unavailable == 1 else 'accounts'}"
+        )
+    if not review:
+        review.append("No unresolved account information")
+
+    inventory = tuple(
+        " · ".join(
+            (
+                user.username,
+                f"UID {user.uid}",
+                f"GID {user.gid}",
+                "groups: " + (", ".join(user.groups) if user.groups is not None else "Unavailable"),
+                "shell: " + (user.shell or "Unavailable"),
+                "privileged: " + ("yes" if user.privileged is True else "NOT_ASSESSED"),
+                "account state: " + (user.account_state or "NOT_ASSESSED"),
+            )
+        )
+        for user in users
+    )
+    details = ReportBlock(
+        title="DETAILS",
+        lists=(
+            ("UID 0", tuple(user.username for user in uid_zero_users)),
+            ("Privileged", tuple(user.username for user in privileged_users)),
+        ),
+    )
+    if detailed:
+        details = ReportBlock(
+            title="ACCOUNT INVENTORY",
+            lines=inventory or ("No local accounts found.",),
+        )
+    return ReportSection(
+        title="USERS",
+        facts=(
+            ("Local accounts", str(len(users))),
+            ("UID 0 accounts", str(uid_zero)),
+            ("Privileged accounts", str(known_privileged)),
+        ),
+        blocks=(
+            ReportBlock("ASSESSMENT", lines=tuple(assessment)),
+            ReportBlock("REVIEW", lines=tuple(review)),
+            details,
+        ),
+    )
+
+
+def _user_error_message(error: Exception) -> str:
+    if isinstance(error, FileNotFoundError):
+        return "The local passwd database could not be found."
+    if isinstance(error, PermissionError):
+        return "The local passwd database could not be read."
+    if isinstance(error, UnicodeError):
+        return "The local account database contains unreadable text."
+    if isinstance(error, ValueError):
+        return f"The local account database is malformed: {_display_value(str(error))}"
+    return "Local account data is unavailable."
+
+
+def _show_users_assessment(*, detailed: bool = False) -> None:
+    """Render a concise account assessment or opt-in full inventory."""
+    try:
+        section = _user_report_section(collect_local_users(), detailed=detailed)
+    except (OSError, UnicodeError, ValueError) as error:
+        section = ReportSection(
+            title="USERS",
+            status="Unavailable / NOT_ASSESSED",
+            message=_user_error_message(error),
+        )
+    print("\n".join(render_report_section(section, terminal_size()[0])))
 
 
 def _show_service_assessment() -> None:
@@ -377,7 +513,7 @@ def _show_scan() -> None:
             host_message="Host facts are supported on Linux only.",
             sections=(),
             findings=(),
-            scope=("system facts", "services", "SSH configuration"),
+            scope=("system facts", "users", "services", "SSH configuration"),
         )
         print("\n".join(render_scan_report(report, terminal_size()[0])))
         return
@@ -393,6 +529,15 @@ def _show_scan() -> None:
         )
     else:
         service_section = _service_report_section(services)
+
+    try:
+        user_section = _user_report_section(collect_local_users())
+    except (OSError, UnicodeError, ValueError) as error:
+        user_section = ReportSection(
+            title="USERS",
+            message=_user_error_message(error),
+            status="Unavailable / NOT_ASSESSED",
+        )
 
     findings: tuple[Finding, ...] = ()
     ssh_section: ReportSection
@@ -415,9 +560,9 @@ def _show_scan() -> None:
 
     report = ScanReport(
         host=system_info,
-        sections=(service_section, ssh_section),
+        sections=(user_section, service_section, ssh_section),
         findings=findings,
-        scope=("system facts", "services", "SSH configuration"),
+        scope=("system facts", "users", "services", "SSH configuration"),
     )
     print("\n".join(render_scan_report(report, terminal_size()[0])))
 
@@ -453,6 +598,8 @@ _COMPLETIONS = (
     "version",
     "scan",
     "scan host",
+    "scan users",
+    "scan users --details",
     "scan service",
     "scan ssh",
     "clear",
@@ -491,6 +638,10 @@ def _dispatch_command(command_name: str) -> bool:
         if parts == ["scan", "host"]:
             _show_host_assessment("HOST DETAILS")
             return True
+        if parts in (["scan", "users"], ["scan", "users", "--details"]):
+            detailed = len(parts) == 3
+            _show_users_assessment(detailed=detailed)
+            return True
         if parts == ["scan", "service"]:
             _show_service_assessment()
             return True
@@ -498,7 +649,7 @@ def _dispatch_command(command_name: str) -> bool:
             _show_ssh_assessment()
             return True
         if len(parts) > 1:
-            print("Usage: scan [host|service|ssh]")
+            print("Usage: scan [host|users [--details]|service|ssh]")
             return True
 
     command = _COMMANDS_BY_NAME.get(command_name)

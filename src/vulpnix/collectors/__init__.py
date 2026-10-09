@@ -3,5 +3,6 @@
 from vulpnix.collectors.host import collect_system_info
 from vulpnix.collectors.ssh import collect_ssh_config
 from vulpnix.collectors.systemd import collect_services
+from vulpnix.collectors.users import collect_local_users
 
-__all__ = ["collect_services", "collect_ssh_config", "collect_system_info"]
+__all__ = ["collect_local_users", "collect_services", "collect_ssh_config", "collect_system_info"]
