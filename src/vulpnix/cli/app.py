@@ -9,6 +9,7 @@ import sys
 
 from vulpnix.collectors import (
     collect_local_users,
+    collect_sensitive_file_metadata,
     collect_services,
     collect_ssh_config,
     collect_sudo_privileges,
@@ -16,6 +17,9 @@ from vulpnix.collectors import (
 )
 from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
 from vulpnix.models import (
+    FileMetadata,
+    FileMetadataResult,
+    FileMetadataStatus,
     SSHConfig,
     Service,
     SudoPrivilege,
@@ -43,6 +47,7 @@ from vulpnix.cli.report import (
     render_report_section,
     render_scan_report,
 )
+from vulpnix.rules.filesystem import FilesystemAssessment, assess_sensitive_files
 from vulpnix.rules import (
     check_ssh_empty_passwords,
     check_ssh_password_authentication,
@@ -102,6 +107,7 @@ def _show_help() -> None:
                     print("  scan users --details  Include the complete account inventory")
                     print("  scan service  Services and startup state")
                     print("  scan ssh  SSH assessment only")
+                    print("  scan filesystem  Sensitive file metadata assessment")
 
 
 def _show_version() -> None:
@@ -451,6 +457,127 @@ def _show_service_assessment() -> None:
         _show_services(services)
 
 
+def _file_metadata_summary(metadata: FileMetadata) -> str:
+    uid = str(metadata.uid) if metadata.uid is not None else "unavailable"
+    gid = str(metadata.gid) if metadata.gid is not None else "unavailable"
+    return (
+        f"{metadata.path} · {metadata.type} · UID {uid} · "
+        f"GID {gid} · mode {metadata.mode:04o} · {metadata.size} bytes"
+    )
+
+
+def _filesystem_report_section(
+    results: tuple[FileMetadataResult, ...],
+    assessment: FilesystemAssessment,
+    *,
+    detailed_findings: bool = False,
+) -> ReportSection:
+    finding_paths = {
+        finding.evidence.split(";", 1)[0].removeprefix("Path: ")
+        for finding in assessment.findings
+    }
+    attention_paths = finding_paths | {item.path for item in assessment.review}
+    details: list[str] = []
+    metadata_by_path = {
+        result.path: result.metadata
+        for result in results
+        if result.metadata is not None
+    }
+    for path in sorted(attention_paths):
+        metadata = metadata_by_path.get(path)
+        if metadata is not None:
+            details.append(_file_metadata_summary(metadata))
+        else:
+            result = next((item for item in results if item.path == path), None)
+            reason = result.reason if result else "metadata unavailable"
+            details.append(f"{path} · NOT_ASSESSED · {reason}")
+
+    ownership_assessable = sum(
+        metadata.uid is not None and metadata.gid is not None
+        for metadata in assessment.checked
+    )
+    assessment_lines = (
+        (f"Permission checks completed for {len(assessment.checked)} regular file(s).",)
+        if assessment.checked
+        else ("No regular files could be assessed.",)
+    )
+    if ownership_assessable:
+        assessment_lines += (
+            f"Ownership verified for {ownership_assessable} file(s).",
+        )
+    if assessment.findings:
+        assessment_lines += tuple(
+            f"REVIEW · {finding.title} ({finding.rule_id})"
+            for finding in assessment.findings
+        )
+    elif assessment.checked:
+        assessment_lines += (
+            "No defined insecure condition detected among checks with reliable data.",
+        )
+
+    review_lines = tuple(
+        f"{item.path}: {item.reason}"
+        for item in assessment.review
+    ) or ("All four target entries were available for the defined checks.",)
+
+    collected = sum(
+        result.status in {FileMetadataStatus.COLLECTED, FileMetadataStatus.PARTIAL}
+        and result.metadata is not None
+        for result in results
+    )
+    fact_lines = tuple(
+        f"{label}: {value}"
+        for label, value in (
+            ("Target files", str(len(results))),
+            ("Metadata collected", f"{collected}/{len(results)}"),
+            ("Regular files inspected", str(len(assessment.checked))),
+            ("Ownership assessable", f"{ownership_assessable}/{len(assessment.checked)}"),
+            ("Verified findings", str(len(assessment.findings))),
+        )
+    )
+    blocks = [
+        ReportBlock("FACTS", lines=fact_lines),
+        ReportBlock("ASSESSMENT", lines=assessment_lines),
+        ReportBlock("REVIEW", lines=review_lines),
+        ReportBlock("DETAILS", lines=tuple(details) or ("No files require additional detail.",)),
+    ]
+    if detailed_findings and assessment.findings:
+        finding_lines: list[str] = []
+        for finding in assessment.findings:
+            finding_lines.extend(
+                (
+                    f"[REVIEW] {finding.title}",
+                    f"Rule: {finding.rule_id}",
+                    f"Evidence: {finding.evidence}",
+                    f"Why it matters: {finding.explanation}",
+                    f"Recommendation: {finding.recommendation}",
+                )
+            )
+        blocks.append(ReportBlock("FINDINGS", lines=tuple(finding_lines)))
+
+    return ReportSection(
+        title="FILESYSTEM",
+        blocks=tuple(blocks),
+    )
+
+
+def _show_filesystem_assessment() -> None:
+    """Collect and render the fixed sensitive-file metadata assessment."""
+    try:
+        results = collect_sensitive_file_metadata()
+        assessment = assess_sensitive_files(results)
+        section = _filesystem_report_section(
+            results, assessment, detailed_findings=True
+        )
+    except (OSError, ValueError) as error:
+        section = ReportSection(
+            title="FILESYSTEM",
+            status="Unavailable / NOT_ASSESSED",
+            message=f"Filesystem metadata could not be assessed: {_display_value(str(error))}",
+        )
+    print("\n".join(render_report_section(section, terminal_size()[0])))
+
+
 def _show_ssh_config(config: SSHConfig) -> None:
     _section("SSH")
     print(f"  {accent('GLOBAL LOGIN OPTIONS', bold=True)}")
@@ -608,7 +735,7 @@ def _show_scan() -> None:
             host_message="Host facts are supported on Linux only.",
             sections=(),
             findings=(),
-            scope=("system facts", "users", "services", "SSH configuration"),
+            scope=("system facts", "users", "services", "SSH configuration", "sensitive file metadata"),
         )
         print("\n".join(render_scan_report(report, terminal_size()[0])))
         return
@@ -636,7 +763,22 @@ def _show_scan() -> None:
             status="Unavailable / NOT_ASSESSED",
         )
 
-    findings: tuple[Finding, ...] = ()
+    try:
+        filesystem_results = collect_sensitive_file_metadata()
+        filesystem_assessment = assess_sensitive_files(filesystem_results)
+        filesystem_section = _filesystem_report_section(
+            filesystem_results, filesystem_assessment
+        )
+        filesystem_findings = filesystem_assessment.findings
+    except (OSError, ValueError) as error:
+        filesystem_section = ReportSection(
+            title="FILESYSTEM",
+            message=f"Filesystem metadata could not be assessed: {_display_value(str(error))}",
+            status="Unavailable / NOT_ASSESSED",
+        )
+        filesystem_findings = ()
+
+    findings: tuple[Finding, ...] = filesystem_findings
     ssh_section: ReportSection
     try:
         ssh_config = collect_ssh_config()
@@ -653,13 +795,13 @@ def _show_scan() -> None:
         )
     else:
         ssh_section = _ssh_report_section(ssh_config)
-        findings = _ssh_findings(ssh_config)
+        findings += _ssh_findings(ssh_config)
 
     report = ScanReport(
         host=system_info,
-        sections=(user_section, service_section, ssh_section),
+        sections=(user_section, service_section, ssh_section, filesystem_section),
         findings=findings,
-        scope=("system facts", "users", "services", "SSH configuration"),
+        scope=("system facts", "users", "services", "SSH configuration", "sensitive file metadata"),
     )
     print("\n".join(render_scan_report(report, terminal_size()[0])))
 
@@ -699,6 +841,7 @@ _COMPLETIONS = (
     "scan users --details",
     "scan service",
     "scan ssh",
+    "scan filesystem",
     "clear",
     "exit",
 )
@@ -745,8 +888,11 @@ def _dispatch_command(command_name: str) -> bool:
         if parts == ["scan", "ssh"]:
             _show_ssh_assessment()
             return True
+        if parts == ["scan", "filesystem"]:
+            _show_filesystem_assessment()
+            return True
         if len(parts) > 1:
-            print("Usage: scan [host|users [--details]|service|ssh]")
+            print("Usage: scan [host|users [--details]|service|ssh|filesystem]")
             return True
 
     command = _COMMANDS_BY_NAME.get(command_name)

@@ -125,6 +125,7 @@ class FullScanWidthTests(unittest.TestCase):
             patch.object(app, "collect_system_info", return_value=sample_report().host),
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(
                 app,
                 "collect_services",

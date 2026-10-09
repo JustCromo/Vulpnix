@@ -191,6 +191,7 @@ class UsersCLItests(unittest.TestCase):
         with (
             patch.object(app, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
             patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
         ):

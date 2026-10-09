@@ -113,7 +113,7 @@ failure cases are tested.
 
 ### M3 — Users & Privileges
 
-**Status: IN PROGRESS — Iteration 1 implemented; Iteration 2 pending design.**
+**Status: COMPLETE — Iterations 1 and 2 implemented.**
 
 **Purpose:** Assess Linux users, privileged accounts, and privilege-related
 security configuration.
@@ -136,7 +136,7 @@ privileged, and unsupported cases.
 
 ### M4 — Filesystem Security
 
-**Status: PLANNED**
+**Status: IN PROGRESS — Iteration 1 (Sensitive File Metadata).**
 
 **Purpose:** Assess sensitive filesystem permissions and special file properties.
 

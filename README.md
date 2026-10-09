@@ -3,8 +3,9 @@
 Vulpnix is a Linux host risk assessment tool. It is intended to help assess
 host configuration and surface potential risks.
 
-The project is at an early stage. Its interactive CLI can collect basic host
-facts and review selected SSH daemon settings.
+The project is at an early stage. Its interactive CLI collects host, user,
+service, SSH, and selected sensitive-file metadata, then presents verified
+security conditions and information that could not be assessed.
 
 ## Current SSH checks
 
@@ -13,9 +14,11 @@ effective values for root login, password authentication, empty passwords, and
 public-key authentication. Findings are review prompts, not a complete risk
 score.
 
-Use `scan` for the full Linux assessment, including host facts and SSH. Use
-`scan host` for host details, `scan service` for services and startup state,
-or `scan ssh` for the SSH assessment alone. The SSH commands use the normal
+Use `scan` for the full Linux assessment, including host facts, users, services,
+SSH, and sensitive-file metadata. Use `scan host` for host details,
+`scan service` for services and startup state, `scan ssh` for the SSH assessment,
+or `scan filesystem` to inspect metadata for `/etc/passwd`, `/etc/shadow`,
+`/etc/group`, and `/etc/gshadow`. The SSH commands use the normal
 global effective configuration and require no connection context arguments.
 
 SSH `Match` rules can change settings for a particular user or connection, so
