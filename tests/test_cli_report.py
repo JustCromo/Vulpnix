@@ -123,6 +123,8 @@ class FullScanWidthTests(unittest.TestCase):
         with (
             patch.object(app, "terminal_size", return_value=(width, 40)),
             patch.object(app, "collect_system_info", return_value=sample_report().host),
+            patch.object(app, "collect_local_users", return_value=()),
+            patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(
                 app,
                 "collect_services",

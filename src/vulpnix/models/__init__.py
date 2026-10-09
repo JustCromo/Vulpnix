@@ -3,6 +3,16 @@
 from vulpnix.models.host import SystemInfo
 from vulpnix.models.service import Service
 from vulpnix.models.ssh import SSHConfig, SSHConnectionContext
+from vulpnix.models.sudo import SudoGrant, SudoPrivilege, SudoPrivilegeStatus
 from vulpnix.models.user import User
 
-__all__ = ["Service", "SSHConfig", "SSHConnectionContext", "SystemInfo", "User"]
+__all__ = [
+    "Service",
+    "SSHConfig",
+    "SSHConnectionContext",
+    "SudoGrant",
+    "SudoPrivilege",
+    "SudoPrivilegeStatus",
+    "SystemInfo",
+    "User",
+]

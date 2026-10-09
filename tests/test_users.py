@@ -10,6 +10,7 @@ from unittest.mock import patch
 
 from vulpnix.cli import app
 from vulpnix.collectors.users import collect_local_users
+from vulpnix.models import SudoGrant, SudoPrivilege, SudoPrivilegeStatus
 from vulpnix.parsers.users import parse_local_users
 
 
@@ -132,29 +133,48 @@ class UsersCLItests(unittest.TestCase):
         )
         with (
             patch.object(app, "collect_local_users", return_value=users),
+            patch.object(
+                app,
+                "collect_sudo_privileges",
+                return_value=(
+                    SudoPrivilege("root", SudoPrivilegeStatus.PRIVILEGES_FOUND,
+                                  grants=(SudoGrant(("ALL",), None, ("ALL",), ()),)),
+                    SudoPrivilege("alice", SudoPrivilegeStatus.NOT_ASSESSED,
+                                  reason="permission denied while inspecting another account"),
+                    SudoPrivilege("bob", SudoPrivilegeStatus.NOT_ASSESSED,
+                                  reason="other-account inspection skipped because current process permissions are insufficient"),
+                ),
+            ),
             patch.object(app, "terminal_size", return_value=(80, 24)),
             contextlib.redirect_stdout(output),
         ):
             app._dispatch_command("scan users")
 
         rendered = output.getvalue()
+        normalized = " ".join(rendered.split())
         self.assertIn("Local accounts", rendered)
         self.assertIn("UID 0 accounts", rendered)
         self.assertIn("Privileged accounts", rendered)
         self.assertIn("Only one UID 0 account detected: root", rendered)
-        self.assertIn("2 accounts could not be evaluated for privilege status", rendered)
+        self.assertIn("1 account: permission denied while inspecting another account", normalized)
+        self.assertIn("1 account: other-account inspection skipped; current process lacks permission", normalized)
+        self.assertIn("Sudo access verified for 1 account", rendered)
         self.assertIn("3 accounts could not be evaluated for account state", rendered)
         self.assertIn("DETAILS", rendered)
         self.assertIn("root", rendered)
         self.assertNotIn("alice · UID 1000", rendered)
         self.assertNotIn("bob · UID 1001", rendered)
         self.assertNotIn("ACCOUNT INVENTORY", rendered)
+        self.assertNotIn("[REVIEW]", rendered)
+        self.assertNotIn("[PASS]", rendered)
+        self.assertNotIn("[FAIL]", rendered)
 
     def test_scan_users_details_shows_complete_inventory(self) -> None:
         output = io.StringIO()
         users = parse_local_users(PASSWD, GROUP)
         with (
             patch.object(app, "collect_local_users", return_value=users),
+            patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
         ):
@@ -170,6 +190,7 @@ class UsersCLItests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(app, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
+            patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
         ):
@@ -188,6 +209,7 @@ class UsersCLItests(unittest.TestCase):
         with (
             patch.object(app, "collect_system_info", return_value=SystemInfo()),
             patch.object(app, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
+            patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_services", return_value=()),
             patch.object(
                 app,

@@ -125,6 +125,8 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(app, "collect_system_info", return_value=SystemInfo()),
+            patch.object(app, "collect_local_users", return_value=()),
+            patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_services", return_value=()),
             patch.object(app, "collect_ssh_config", side_effect=unsupported),
             patch.object(app, "check_ssh_root_login") as root_rule,
@@ -154,6 +156,8 @@ class SSHCommandTests(unittest.TestCase):
             app._show_help()
 
         self.assertIn("scan host  Host facts only", output.getvalue())
+        self.assertIn("scan users  User and privilege assessment", output.getvalue())
+        self.assertIn("scan users --details  Include the complete account inventory", output.getvalue())
         self.assertIn("scan service  Services and startup state", output.getvalue())
         self.assertIn("scan ssh  SSH assessment only", output.getvalue())
         self.assertNotIn("scan --ssh", output.getvalue())
@@ -214,6 +218,8 @@ class SSHCommandTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(app, "collect_system_info", return_value=info) as host,
+            patch.object(app, "collect_local_users", return_value=()),
+            patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_services", return_value=()) as services,
             patch.object(app, "collect_ssh_config", return_value=ssh_config) as ssh,
             redirect_stdout(output),
