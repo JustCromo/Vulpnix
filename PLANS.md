@@ -136,7 +136,7 @@ privileged, and unsupported cases.
 
 ### M4 — Filesystem Security
 
-**Status: IN PROGRESS — Iteration 1 (Sensitive File Metadata).**
+**Status: IN PROGRESS — Iterations 1 and 2 implemented.**
 
 **Purpose:** Assess sensitive filesystem permissions and special file properties.
 
@@ -145,8 +145,7 @@ important files using `FileMetadata`; candidate targets include `/etc/passwd`,
 `/etc/shadow`, `/etc/group`, and authentication/security configuration. Detect
 SUID/SGID and unusual permissions without declaring every such file vulnerable.
 Detect world-writable sensitive files; later consider dangerous writable
-directories/files. Handle symlinks safely and avoid an unnecessary full-filesystem
-scan in the first implementation.
+directories/files. Handle symlinks safely and bound the set-ID scan.
 
 **Expected deliverables:** Metadata collection, sensitive-permission rules,
 SUID/SGID detection, and evidence-backed recommendations.

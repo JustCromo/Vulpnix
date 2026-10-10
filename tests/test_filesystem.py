@@ -17,6 +17,8 @@ from vulpnix.models import (
     FileMetadata,
     FileMetadataResult,
     FileMetadataStatus,
+    CoverageStatus,
+    FilesystemCoverage,
     SSHConfig,
     SystemInfo,
 )
@@ -38,6 +40,10 @@ def result(
     if status is FileMetadataStatus.COLLECTED:
         metadata = FileMetadata(path, uid, gid, mode, 128, file_type)
     return FileMetadataResult(path, status, metadata, reason)
+
+
+def empty_coverage() -> FilesystemCoverage:
+    return FilesystemCoverage((), CoverageStatus.COLLECTED, (), 0, 0.0)
 
 
 class FilesystemNormalizationTests(unittest.TestCase):
@@ -273,6 +279,7 @@ class FilesystemCLITests(unittest.TestCase):
         )
         with (
             patch.object(app, "collect_sensitive_file_metadata", return_value=records),
+            patch.object(app, "collect_setid_files", return_value=empty_coverage()),
             patch.object(app, "terminal_size", return_value=(80, 24)),
             contextlib.redirect_stdout(output),
         ):
@@ -306,6 +313,7 @@ class FilesystemCLITests(unittest.TestCase):
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=records),
+            patch.object(app, "collect_setid_files", return_value=empty_coverage()),
             patch.object(app, "collect_services", return_value=()),
             patch.object(app, "collect_ssh_config", return_value=SSHConfig("no", False, False, True)),
             contextlib.redirect_stdout(output),

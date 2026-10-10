@@ -10,6 +10,7 @@ import sys
 from vulpnix.collectors import (
     collect_local_users,
     collect_sensitive_file_metadata,
+    collect_setid_files,
     collect_services,
     collect_ssh_config,
     collect_sudo_privileges,
@@ -47,7 +48,11 @@ from vulpnix.cli.report import (
     render_report_section,
     render_scan_report,
 )
-from vulpnix.rules.filesystem import FilesystemAssessment, assess_sensitive_files
+from vulpnix.rules.filesystem import (
+    FilesystemAssessment,
+    assess_sensitive_files,
+    assess_setid_files,
+)
 from vulpnix.rules import (
     check_ssh_empty_passwords,
     check_ssh_password_authentication,
@@ -469,12 +474,17 @@ def _file_metadata_summary(metadata: FileMetadata) -> str:
 def _filesystem_report_section(
     results: tuple[FileMetadataResult, ...],
     assessment: FilesystemAssessment,
+    setid_coverage,
+    setid_assessment,
     *,
     detailed_findings: bool = False,
 ) -> ReportSection:
+    filesystem_findings = tuple(assessment.findings)
+    setid_findings = tuple(setid_assessment.findings)
+    all_findings = filesystem_findings + setid_findings
     finding_paths = {
         finding.evidence.split(";", 1)[0].removeprefix("Path: ")
-        for finding in assessment.findings
+        for finding in all_findings
     }
     attention_paths = finding_paths | {item.path for item in assessment.review}
     details: list[str] = []
@@ -505,10 +515,10 @@ def _filesystem_report_section(
         assessment_lines += (
             f"Ownership verified for {ownership_assessable} file(s).",
         )
-    if assessment.findings:
+    if all_findings:
         assessment_lines += tuple(
-            f"REVIEW · {finding.title} ({finding.rule_id})"
-            for finding in assessment.findings
+            f"{finding.status.value} · {finding.title} ({finding.rule_id})"
+            for finding in all_findings
         )
     elif assessment.checked:
         assessment_lines += (
@@ -518,7 +528,10 @@ def _filesystem_report_section(
     review_lines = tuple(
         f"{item.path}: {item.reason}"
         for item in assessment.review
-    ) or ("All four target entries were available for the defined checks.",)
+    )
+    review_lines += tuple(f"Set-ID: {item}" for item in setid_assessment.review)
+    if not review_lines:
+        review_lines = ("All defined filesystem checks completed without unresolved review items.",)
 
     collected = sum(
         result.status in {FileMetadataStatus.COLLECTED, FileMetadataStatus.PARTIAL}
@@ -532,7 +545,10 @@ def _filesystem_report_section(
             ("Metadata collected", f"{collected}/{len(results)}"),
             ("Regular files inspected", str(len(assessment.checked))),
             ("Ownership assessable", f"{ownership_assessable}/{len(assessment.checked)}"),
-            ("Verified findings", str(len(assessment.findings))),
+            ("Verified findings", str(len(all_findings))),
+            ("Set-ID regular files", str(len(setid_coverage.files))),
+            ("Set-ID review items", str(len(setid_assessment.review))),
+            ("Set-ID verified findings", str(len(setid_findings))),
         )
     )
     blocks = [
@@ -541,12 +557,12 @@ def _filesystem_report_section(
         ReportBlock("REVIEW", lines=review_lines),
         ReportBlock("DETAILS", lines=tuple(details) or ("No files require additional detail.",)),
     ]
-    if detailed_findings and assessment.findings:
+    if detailed_findings and all_findings:
         finding_lines: list[str] = []
-        for finding in assessment.findings:
+        for finding in all_findings:
             finding_lines.extend(
                 (
-                    f"[REVIEW] {finding.title}",
+                    f"[{finding.status.value}] {finding.title}",
                     f"Rule: {finding.rule_id}",
                     f"Evidence: {finding.evidence}",
                     f"Why it matters: {finding.explanation}",
@@ -566,8 +582,16 @@ def _show_filesystem_assessment() -> None:
     try:
         results = collect_sensitive_file_metadata()
         assessment = assess_sensitive_files(results)
+
+        setid_coverage = collect_setid_files()
+        setid_assessment = assess_setid_files(setid_coverage)
+
         section = _filesystem_report_section(
-            results, assessment, detailed_findings=True
+            results,
+            assessment,
+            setid_coverage=setid_coverage,
+            setid_assessment=setid_assessment,
+            detailed_findings=True,
         )
     except (OSError, ValueError) as error:
         section = ReportSection(
@@ -735,7 +759,7 @@ def _show_scan() -> None:
             host_message="Host facts are supported on Linux only.",
             sections=(),
             findings=(),
-            scope=("system facts", "users", "services", "SSH configuration", "sensitive file metadata"),
+            scope=("system facts", "users", "services", "SSH configuration", "filesystem metadata", "set-ID files"),
         )
         print("\n".join(render_scan_report(report, terminal_size()[0])))
         return
@@ -766,10 +790,17 @@ def _show_scan() -> None:
     try:
         filesystem_results = collect_sensitive_file_metadata()
         filesystem_assessment = assess_sensitive_files(filesystem_results)
+        setid_coverage = collect_setid_files()
+        setid_assessment = assess_setid_files(setid_coverage)
         filesystem_section = _filesystem_report_section(
-            filesystem_results, filesystem_assessment
+            filesystem_results,
+            filesystem_assessment,
+            setid_coverage=setid_coverage,
+            setid_assessment=setid_assessment,
         )
-        filesystem_findings = filesystem_assessment.findings
+        filesystem_findings = (
+            filesystem_assessment.findings + setid_assessment.findings
+        )
     except (OSError, ValueError) as error:
         filesystem_section = ReportSection(
             title="FILESYSTEM",
@@ -801,7 +832,7 @@ def _show_scan() -> None:
         host=system_info,
         sections=(user_section, service_section, ssh_section, filesystem_section),
         findings=findings,
-        scope=("system facts", "users", "services", "SSH configuration", "sensitive file metadata"),
+        scope=("system facts", "users", "services", "SSH configuration", "filesystem metadata", "set-ID files"),
     )
     print("\n".join(render_scan_report(report, terminal_size()[0])))
 

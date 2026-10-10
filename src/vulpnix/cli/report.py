@@ -3,6 +3,7 @@
 from dataclasses import dataclass
 
 from vulpnix.cli.terminal import accent, display_width, wrap_text
+from vulpnix.cli.summary import AssessmentCoverage, build_assessment_summary
 from vulpnix.findings import Finding
 from vulpnix.models import SystemInfo
 
@@ -232,13 +233,15 @@ def render_scan_report(report: ScanReport, width: int) -> list[str]:
         lines.extend(render_report_section(section, width))
 
     lines.extend(("", *_finding_details(report.findings, width), ""))
-    lines.append(accent("SUMMARY", bold=True))
-    lines.extend(_wrap("No aggregate risk score is calculated.", width - 2, indent="  "))
-    lines.extend(
-        _wrap(
-            "Configuration facts only; this is not a complete access test.",
-            width - 2,
-            indent="  ",
-        )
+    summary = build_assessment_summary(
+        findings=report.findings,
+        coverage=AssessmentCoverage.COMPLETE,
+        review_items=0,
     )
+
+    lines.append(accent("FINAL RESULT", bold=True))
+    lines.append(f"  ✗ {summary.result.value}")
+    lines.extend(_wrap(summary.description, width - 2, indent="  "))
+    lines.extend(_wrap(summary.action, width - 2, indent="  "))
+
     return lines

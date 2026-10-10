@@ -1,6 +1,17 @@
 """Structured, evidence-backed assessment findings."""
 
 from dataclasses import dataclass
+from enum import Enum
+
+
+class FindingStatus(Enum):
+    """Central status vocabulary for findings."""
+
+    PASS = "PASS"
+    FAIL = "FAIL"
+    NOT_ASSESSED = "NOT_ASSESSED"
+    ERROR = "ERROR"
+    REVIEW = "REVIEW"
 
 
 @dataclass(frozen=True, slots=True)
@@ -12,3 +23,5 @@ class Finding:
     evidence: str
     explanation: str
     recommendation: str
+    status: FindingStatus = FindingStatus.REVIEW
+    severity: str | None = None

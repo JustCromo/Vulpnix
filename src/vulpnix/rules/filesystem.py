@@ -2,8 +2,14 @@
 
 from dataclasses import dataclass
 
-from vulpnix.findings import Finding
-from vulpnix.models import FileMetadata, FileMetadataResult, FileMetadataStatus
+from vulpnix.findings import Finding, FindingStatus
+from vulpnix.models import (
+    CoverageStatus,
+    FileMetadata,
+    FileMetadataResult,
+    FileMetadataStatus,
+    FilesystemCoverage,
+)
 
 _SENSITIVE_SECRET_FILES = {"/etc/shadow", "/etc/gshadow"}
 _SENSITIVE_FILES = {
@@ -29,6 +35,17 @@ class FilesystemAssessment:
 
     checked: tuple[FileMetadata, ...]
     review: tuple[FilesystemReview, ...]
+    findings: tuple[Finding, ...]
+
+
+@dataclass(frozen=True, slots=True)
+class SetIdAssessment:
+    """Set-ID conclusions and unresolved items, separate from collection."""
+
+    assessed: int
+    active: int
+    disabled: int
+    review: tuple[str, ...]
     findings: tuple[Finding, ...]
 
 
@@ -145,3 +162,71 @@ def assess_sensitive_files(
             )
 
     return FilesystemAssessment(tuple(checked), tuple(review), tuple(findings))
+
+
+def assess_setid_files(coverage: FilesystemCoverage) -> SetIdAssessment:
+    """Fail only on a verified world-writable, active set-ID ELF executable."""
+    assessed = active = disabled = 0
+    review = list(coverage.review)
+    findings: list[Finding] = []
+    for item in coverage.files:
+        metadata = item.metadata
+        path = metadata.path
+        setuid_active = bool(metadata.mode & 0o4000 and metadata.mode & 0o111)
+        setgid_active = bool(metadata.mode & 0o2000 and metadata.mode & 0o010)
+        if not (setuid_active or setgid_active):
+            continue
+        if metadata.type != "regular file":
+            review.append(f"{path}: set-ID entry is not a regular file")
+            continue
+        if metadata.uid is None or metadata.gid is None:
+            review.append(f"{path}: ownership mapping is unavailable")
+            continue
+        if item.is_elf is None:
+            review.append(f"{path}: ELF signature could not be verified")
+            continue
+        if not item.is_elf:
+            review.append(f"{path}: set-ID file is not identified as ELF")
+            continue
+        if item.mount_options is None:
+            review.append(f"{path}: mount execution options are unavailable")
+            continue
+        if {"nosuid", "noexec"}.intersection(item.mount_options):
+            disabled += 1
+            assessed += 1
+            continue
+        active += 1
+        assessed += 1
+        if metadata.mode & 0o002:
+            kind = "SUID" if setuid_active else "SGID"
+            if setuid_active and setgid_active:
+                kind = "SUID/SGID"
+            findings.append(
+                Finding(
+                    rule_id="FS-SETID-WORLD-WRITE-001",
+                    title="Active set-ID ELF file is world-writable",
+                    evidence=(
+                        f"Path: {path}; type: {metadata.type}; set-ID: {kind}; "
+                        f"UID: {metadata.uid}; GID: {metadata.gid}; "
+                        f"mode: {metadata.mode:04o}; mount options: "
+                        f"{','.join(item.mount_options)}"
+                    ),
+                    explanation=(
+                        "Any local account can modify this executable while its set-ID "
+                        "permissions are active, allowing the modified program to run "
+                        "with its configured effective identity."
+                    ),
+                    recommendation=(
+                        "Remove world-write access and verify the file's intended owner, "
+                        "group, and package integrity."
+                    ),
+                    status=FindingStatus.FAIL,
+                )
+            )
+    return SetIdAssessment(
+        assessed=assessed,
+        active=active,
+        disabled=disabled,
+        review=tuple(review),
+        findings=tuple(findings),
+    )

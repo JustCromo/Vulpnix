@@ -202,8 +202,10 @@ class FullScanWidthTests(unittest.TestCase):
                 "Review whether password login is required; consider key-based "
                 "authentication and any additional access controls in use."
             ),
-            "No aggregate risk score is calculated.",
-            "not a complete access test",
+            "FINAL RESULT",
+            "REVIEW REQUIRED",
+            "No verified security issues were found, but one or more items need review.",
+            "No verified vulnerability requires immediate remediation.",
         ):
             self.assertIn(text, normalized)
             self.assertIn(text, normalized_wide)

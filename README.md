@@ -18,7 +18,13 @@ Use `scan` for the full Linux assessment, including host facts, users, services,
 SSH, and sensitive-file metadata. Use `scan host` for host details,
 `scan service` for services and startup state, `scan ssh` for the SSH assessment,
 or `scan filesystem` to inspect metadata for `/etc/passwd`, `/etc/shadow`,
-`/etc/group`, and `/etc/gshadow`. The SSH commands use the normal
+`/etc/group`, and `/etc/gshadow`, plus bounded SUID/SGID discovery under
+`/usr`, `/opt`, `/bin`, and `/sbin`. Nested mounts are skipped; discovery stops
+after 250,000 entries or 10 seconds and reports partial coverage. Set-ID bits
+alone are not findings: Vulpnix reports a FAIL only for a verified executable
+ELF with active set-ID permissions and world-write access on a mount where
+execution is allowed. This check does not execute binaries or escalate
+privileges. The SSH commands use the normal
 global effective configuration and require no connection context arguments.
 
 SSH `Match` rules can change settings for a particular user or connection, so
