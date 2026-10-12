@@ -204,8 +204,8 @@ class FullScanWidthTests(unittest.TestCase):
             ),
             "FINAL RESULT",
             "REVIEW REQUIRED",
-            "No verified security issues were found, but one or more items need review.",
-            "No verified vulnerability requires immediate remediation.",
+            "The system could not be fully assessed with the current privileges.",
+            "Use elevated privileges to complete the missing checks: sudo vulpnix",
         ):
             self.assertIn(text, normalized)
             self.assertIn(text, normalized_wide)

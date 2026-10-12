@@ -6,6 +6,7 @@ from vulpnix.cli.terminal import accent, display_width, wrap_text
 from vulpnix.cli.summary import AssessmentCoverage, build_assessment_summary
 from vulpnix.findings import Finding
 from vulpnix.models import SystemInfo
+from vulpnix.scan.privilege import PrivilegeContext
 
 
 @dataclass(frozen=True)
@@ -42,6 +43,9 @@ class ScanReport:
     scope: tuple[str, ...]
     host_message: str | None = None
     risk_score: str | None = None
+    coverage: AssessmentCoverage = AssessmentCoverage.COMPLETE
+    review_items: int = 0
+    privilege: PrivilegeContext | None = None
 
 
 def _safe(value: object) -> str:
@@ -211,7 +215,8 @@ def render_scan_report(report: ScanReport, width: int) -> list[str]:
         "",
         accent("DETAILS", bold=True),
     ]
-    if report.host is not None:
+    has_system_section = any(section.title in {"SYSTEM", "HOST", "HOST DETAILS"} for section in report.sections)
+    if report.host is not None and not has_system_section:
         distribution = report.host.distribution or "Unavailable"
         if report.host.distribution_version:
             distribution += f" ({report.host.distribution_version})"
@@ -222,26 +227,37 @@ def render_scan_report(report: ScanReport, width: int) -> list[str]:
             ("Architecture", report.host.architecture or "Unavailable"),
             ("Uptime", _uptime(report.host.uptime_seconds)),
         )
-        system_section = ReportSection("SYSTEM", facts=system_facts)
-    else:
-        system_section = ReportSection(
-            "SYSTEM", message=report.host_message or "Host facts unavailable."
-        )
-
-    lines.extend(render_report_section(system_section, width))
+        lines.extend(render_report_section(ReportSection("SYSTEM", facts=system_facts), width))
     for section in report.sections:
         lines.extend(render_report_section(section, width))
 
     lines.extend(("", *_finding_details(report.findings, width), ""))
     summary = build_assessment_summary(
         findings=report.findings,
-        coverage=AssessmentCoverage.COMPLETE,
-        review_items=0,
+        coverage=report.coverage,
+        review_items=report.review_items,
     )
 
+    lines.append("")
     lines.append(accent("FINAL RESULT", bold=True))
-    lines.append(f"  ✗ {summary.result.value}")
-    lines.extend(_wrap(summary.description, width - 2, indent="  "))
-    lines.extend(_wrap(summary.action, width - 2, indent="  "))
+    icon = {
+        "NO VERIFIED ISSUES": "✓",
+        "REVIEW REQUIRED": "⚠",
+        "ISSUES DETECTED": "✗",
+    }.get(summary.result.value, "!")
+    lines.append(f"  {icon} {summary.result.value}")
+    if report.privilege is not None:
+        mode = report.privilege.mode
+        lines.extend(_wrap(f"  Execution mode: {mode} (UID {report.privilege.uid})", width - 2))
+    if (
+        report.privilege is not None
+        and not report.privilege.privileged
+        and summary.result.value == "REVIEW REQUIRED"
+    ):
+        lines.extend(_wrap("The system could not be fully assessed with the current privileges.", width - 2, indent="  "))
+        lines.extend(_wrap("Use elevated privileges to complete the missing checks: sudo vulpnix", width - 2, indent="  "))
+    else:
+        lines.extend(_wrap(summary.description, width - 2, indent="  "))
+        lines.extend(_wrap(summary.action, width - 2, indent="  "))
 
     return lines

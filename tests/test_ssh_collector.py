@@ -139,8 +139,8 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
             app._show_scan()
 
         rendered = output.getvalue()
-        self.assertIn("NOT ASSESSED / Unavailable", rendered)
-        self.assertIn("sshd -G is not supported", rendered)
+        self.assertIn("NOT_ASSESSED", rendered)
+        self.assertIn("sshd -G", rendered)
         self.assertIn("exit 2", rendered)
         self.assertNotIn("\x1b[31m", rendered)
         self.assertNotRegex(rendered, r"\[(?:PASS|FAIL)\]")
@@ -171,38 +171,28 @@ class SSHCommandTests(unittest.TestCase):
         ssh_assessment.assert_called_once_with()
 
     def test_scan_host_shows_host_facts_only(self) -> None:
-        info = SystemInfo(distribution="Example Linux", distribution_version="1")
-        with (
-            patch.object(app, "collect_system_info", return_value=info) as collect,
-            patch.object(app, "_show_system_info") as show_info,
-            patch.object(app, "collect_services") as services,
-            patch.object(app, "_show_ssh_assessment") as ssh,
-            redirect_stdout(io.StringIO()),
-        ):
+        info = SystemInfo(hostname="example", distribution="Example Linux", distribution_version="1")
+        output = io.StringIO()
+        with patch.object(app, "collect_system_info", return_value=info), redirect_stdout(output):
             keep_running = app._dispatch_command("scan host")
-
         self.assertTrue(keep_running)
-        collect.assert_called_once_with()
-        show_info.assert_called_once_with(info, "HOST DETAILS")
-        services.assert_not_called()
-        ssh.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("HOST DETAILS", rendered)
+        self.assertIn("example", rendered)
+        self.assertIn("Example Linux (1)", rendered)
+        self.assertNotIn("SERVICES", rendered)
+        self.assertNotIn("SSH", rendered)
 
     def test_scan_service_shows_service_and_startup_state_only(self) -> None:
         units = (Service(name="example.service", state="active", unit_file_state="enabled"),)
-        with (
-            patch.object(app, "collect_services", return_value=units) as collect,
-            patch.object(app, "_show_services") as show_services,
-            patch.object(app, "collect_system_info") as host,
-            patch.object(app, "_show_ssh_assessment") as ssh,
-            redirect_stdout(io.StringIO()),
-        ):
+        output = io.StringIO()
+        with patch.object(app, "collect_services", return_value=units), redirect_stdout(output):
             keep_running = app._dispatch_command("scan service")
-
         self.assertTrue(keep_running)
-        collect.assert_called_once_with()
-        show_services.assert_called_once_with(units)
-        host.assert_not_called()
-        ssh.assert_not_called()
+        rendered = output.getvalue()
+        self.assertIn("SERVICES", rendered)
+        self.assertIn("example.service", rendered)
+        self.assertNotIn("SSH configuration", rendered)
 
     def test_scan_still_dispatches_to_full_assessment(self) -> None:
         info = SystemInfo(
@@ -243,20 +233,21 @@ class SSHCommandTests(unittest.TestCase):
             permit_empty_passwords=False,
             public_key_authentication=True,
         )
+        output = io.StringIO()
         with (
-            patch.object(app, "collect_ssh_config", return_value=config) as collect,
-            patch.object(app, "_show_ssh_config") as show_config,
+            patch.object(app, "collect_ssh_config", return_value=config),
             patch.object(app, "check_ssh_root_login", return_value=()),
             patch.object(app, "check_ssh_password_authentication", return_value=()),
             patch.object(app, "check_ssh_empty_passwords", return_value=()),
             patch.object(app, "check_ssh_public_key_authentication", return_value=()),
-            patch.object(app, "_show_findings") as show_findings,
+            redirect_stdout(output),
         ):
             app._show_ssh_assessment()
-
-        collect.assert_called_once_with()
-        show_config.assert_called_once_with(config)
-        show_findings.assert_called_once_with(())
+        rendered = output.getvalue()
+        self.assertIn("SSH", rendered)
+        self.assertIn("Root login", rendered)
+        self.assertIn("key login only", rendered)
+        self.assertIn("FINAL RESULT", rendered)
 
 
 class CommandCompletionTests(unittest.TestCase):

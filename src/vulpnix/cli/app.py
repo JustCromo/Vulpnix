@@ -61,30 +61,44 @@ from vulpnix.rules import (
     verified_privileged_accounts,
 )
 
+from vulpnix.scan.orchestrator import ScanOrchestrator
+from vulpnix.scan.privilege import current_privilege_context
+from vulpnix.scan.progress import ScanProgress, ScanStage
+
 
 _FOX_ART = (
-    "⠀⠀⠀⠀⠀⢀⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
-    "⠀⠀⠀⠀⠀⣸⣿⡄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
-    "⠀⠀⠀⠀⢠⡟⠘⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
-    "⠀⠀⠀⢰⡟⠀⠀⠈⠻⣷⣤⣤⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
-    "⠀⠀⣠⡟⠀⠀⠀⠀⠀⠈⢻⡿⣷⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
-    "⠀⣰⡟⠀⠀⠀⠀⠀⠀⠀⠀⠻⠸⣷⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀",
-    "⢰⡏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢹⣇⠀⣠⣄⣀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⣀⠀⠀⠀⠀⠀⠀⠀",
-    "⣾⡁⢀⣠⠴⠒⠲⣤⣠⠶⠋⠳⣤⣸⣿⣰⣿⣿⣿⣷⣄⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⡄⠀⠀⠀⠀⠀⠀",
-    "⣿⠟⠉⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⣽⠏⣿⡿⢿⣿⣿⣿⣷⣄⠀⠀⠀⠀⢠⣾⣿⣿⣿⠋⢹⡇⠀⠀⠀⠀⠀⠀",
-    "⢹⡆⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣰⡟⠀⣿⠁⠀⠙⣿⡛⠛⢿⡶⠶⠶⠶⣿⣄⣀⣰⠃⠀⢸⡇⠀⠀⠀⠀⠀⠀",
-    "⠈⢷⡀⠀⠀⠀⠀⠀⠀⠀⠀⢰⡿⠁⠀⣿⠀⠀⠀⠈⢷⡀⠘⠛⠀⠀⠀⠀⠈⠉⠳⣄⠀⢸⡇⠀⠀⠀⠀⠀⠀",
-    "⠀⠈⢿⣦⡀⠀⠀⠀⠀⠀⢀⣿⣇⣀⠀⢻⠀⠀⠀⠀⢰⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠳⣾⠃⠀⣤⣤⣄⠀⠀",
-    "⠀⠀⠀⠉⠻⢶⣄⣠⣴⠞⠛⠉⠉⠙⠻⢾⣇⠀⢀⣰⠏⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⣿⡄⠀⣿⢩⡿⣿⡆",
-    "⠀⠀⠀⠀⣠⣴⠟⠉⠀⠀⠀⠀⠀⠀⠀⠀⢹⡷⠞⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⡇⠀⣿⣟⣵⡿⠁",
-    "⠀⢀⣠⡾⠋⠁⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢸⣇⠀⠀⠀⣴⣿⠀⠀⠀⠀⠀⠀⢠⣶⠀⠀⣸⡇⠀⠙⠋⠁⠀⠀",
-    "⢸⣿⣿⡇⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⣿⣄⣈⣀⣙⣁⠀⠀⣶⣾⡶⠀⠻⠿⠀⢠⣿⣁⡀⠀⠀⠀⠀⠀",
-    "⠈⠛⠻⠿⠶⠶⠶⡤⣤⣤⣤⣄⣀⣤⣀⣠⣤⣀⣀⣹⣿⣿⣿⣿⣤⣽⣿⣴⣶⣶⡦⢼⣿⣿⣿⣿⠇⠀⠀⠀⠀",
+    "                  .................###%%#:.",
+    "                ..................=%%#***---=",
+    "              ....................-++=========",
+    "            .......:------::::::::-=============",
+    "          .........::..............=============",
+    "         .......................:--------=======",
+    "         .....................-----===---====-====",
+    "         .....--+*###%*---------=-.........::------=",
+    "         ......:=#####+====-----...........::::-----=",
+    "         ........+%%*-=====---:............::::::-----",
+    "         ........:*#=-=====--:..............::::::--===",
+    "         ..........--=======-..............:::::::--===",
+    "         .....---::--=======-.............:+-:::::--===",
+    "         .............======-...........*%##*-::::--===",
+    "         ..............:-==---......:::-####+::::---==",
+    "         .................-----:::::::::::::::::---===",
+    "         ..........::::::::-----::::::::::::::::-====",
+    "         .....-----------:::------::::::::::---===++",
+    "         .....................:-==-----::---===+++==",
+    "         ........................:-===========++==----",
+    "         ...................................   ===-----",
+    "         .....-------:::::..................     ==-----",
+    "         ...................................      ===---+#",
+    "         ...................................       ==++*###",
+    "          ..................................        +#%%###",
+    "           :..............................            %%%",
 )
 _PRESENTATION_INDENT = "    "
 _TITLE_BOX_WIDTH = 34
 _OUTPUT_LAYOUT_CACHE: tuple[int, int, int, str, list[str]] | None = None
 _SECTION_WIDTH = 48
+_LIVE_PROGRESS = False
 
 
 @dataclass(frozen=True)
@@ -113,6 +127,7 @@ def _show_help() -> None:
                     print("  scan service  Services and startup state")
                     print("  scan ssh  SSH assessment only")
                     print("  scan filesystem  Sensitive file metadata assessment")
+                    print("  Run once with: sudo vulpnix — all commands in the shell inherit UID 0")
 
 
 def _show_version() -> None:
@@ -128,7 +143,7 @@ def _show_info() -> None:
     print(f"\n{accent('DESIGN GOAL')}")
     print("Evidence-backed results · clear explanations · fewer false positives")
     print(f"\n{accent('CURRENT STATUS')}")
-    print("Interactive CLI foundation; host assessment is not implemented yet.")
+    print("Shared scan orchestration with rootless and privileged execution modes.")
 
 
 def _clear_screen() -> None:
@@ -170,64 +185,66 @@ def _format_uptime(seconds: float | None) -> str:
     return " ".join(parts)
 
 
-def _show_system_info(info: SystemInfo, title: str = "SYSTEM") -> None:
-    distribution = _display_value(info.distribution)
-    if info.distribution_version:
-        distribution += f" ({_display_value(info.distribution_version)})"
+def _render_result(result) -> None:
+    """Render a normalized scan result with the shared terminal renderer."""
+    report = ScanReport(
+        host=result.host,
+        sections=result.sections,
+        findings=result.findings,
+        scope=result.scope,
+        coverage=result.coverage,
+        review_items=result.review_items,
+        privilege=result.privilege,
+    )
+    print("\n".join(render_scan_report(report, terminal_size()[0])))
 
-    _section(title)
-    print(f"  {'Host':<16} {_display_value(info.hostname)}")
-    print(f"  {'Distribution':<16} {distribution}")
-    print(f"  {'Kernel':<16} {_display_value(info.kernel_release)}")
-    print(f"  {'Architecture':<16} {_display_value(info.architecture)}")
-    print(f"  {'Uptime':<16} {_format_uptime(info.uptime_seconds)}")
+
+def _progress_callback(event: ScanProgress) -> None:
+    if not _LIVE_PROGRESS:
+        return
+    stream = sys.__stdout__
+    stream.write(f"\r\033[K  {event.stage.value:<10} {event.message}")
+    stream.flush()
+    if event.stage in {ScanStage.COMPLETED, ScanStage.ERROR}:
+        stream.write("\n")
+        stream.flush()
+
+
+def _make_orchestrator() -> ScanOrchestrator:
+    return ScanOrchestrator(progress_callback=_progress_callback if _LIVE_PROGRESS else None)
 
 
 def _show_host_assessment(title: str = "SYSTEM") -> bool:
-    """Collect and show host facts, returning whether collection succeeded."""
     try:
-        system_info = collect_system_info()
+        result = _make_orchestrator().run_host(
+            collector=collect_system_info,
+            section_builder=lambda info: ReportSection(
+                title=title,
+                facts=(
+                    ("Hostname", _display_value(info.hostname)),
+                    ("Distribution", _display_value(info.distribution) + (f" ({_display_value(info.distribution_version)})" if info.distribution_version else "")),
+                    ("Kernel", _display_value(info.kernel_release)),
+                    ("Architecture", _display_value(info.architecture)),
+                    ("Uptime", _format_uptime(info.uptime_seconds)),
+                ),
+            ),
+        )
     except NotImplementedError:
-        _section(title)
-        print("Host facts are supported on Linux only.")
+        result = _make_orchestrator()._result(
+            sections=(ReportSection(title=title, status="NOT_ASSESSED", message="Host facts are supported on Linux only."),),
+            scope=("system facts",), review_items=1,
+        )
+        _render_result(result)
         return False
-
-    _show_system_info(system_info, title)
+    except (OSError, UnicodeError, ValueError) as error:
+        result = _make_orchestrator()._result(
+            sections=(ReportSection(title=title, status="NOT_ASSESSED", message=_display_value(str(error))),),
+            scope=("system facts",), review_items=1,
+        )
+        _render_result(result)
+        return False
+    _render_result(result)
     return True
-
-
-def _show_services(services: tuple[Service, ...]) -> None:
-    active = sum(service.state == "active" for service in services)
-    inactive = sum(service.state == "inactive" for service in services)
-    other_state = len(services) - active - inactive
-    enabled = sum(service.enabled is True for service in services)
-    disabled = sum(service.enabled is False for service in services)
-    unknown_enabled = len(services) - enabled - disabled
-
-    _section("SERVICES")
-    print(f"  {'Units':<16} {len(services)}")
-    print(
-        f"  {'State':<16} {active} active · {inactive} inactive · "
-        f"{other_state} other/unknown"
-    )
-    print(
-        f"  {'Startup enabled':<16} {enabled} yes · {disabled} no · "
-        f"{unknown_enabled} unknown"
-    )
-
-    review_services = tuple(
-        service
-        for service in services
-        if service.state == "active" and service.unit_file_state == "enabled"
-    )
-    print(f"\n{accent('ACTIVE AT STARTUP', bold=True)}")
-    if not review_services:
-        print("  No active, startup-enabled services found.")
-        return
-
-    print("  Active now and enabled to start at boot:")
-    for service in review_services:
-        print(f"  • {_display_value(service.name)}")
 
 
 def _service_error_message(error: Exception) -> str:
@@ -434,32 +451,28 @@ def _user_error_message(error: Exception) -> str:
     return "Local account data is unavailable."
 
 
-def _show_users_assessment(*, detailed: bool = False) -> None:
-    """Render a concise account assessment or opt-in full inventory."""
-    try:
-        users = collect_local_users()
-        sudo_privileges = collect_sudo_privileges(users)
-        section = _user_report_section(
-            users, sudo_privileges, detailed=detailed
-        )
-    except (OSError, UnicodeError, ValueError) as error:
-        section = ReportSection(
-            title="USERS",
-            status="Unavailable / NOT_ASSESSED",
-            message=_user_error_message(error),
-        )
-    print("\n".join(render_report_section(section, terminal_size()[0])))
-
-
 def _show_service_assessment() -> None:
-    """Collect systemd service state and startup information."""
     try:
-        services = collect_services()
+        result = _make_orchestrator().run_services(collector=collect_services, section_builder=_service_report_section)
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        _section("SERVICES")
-        print(f"  Unavailable: {_service_error_message(error)}")
-    else:
-        _show_services(services)
+        result = _make_orchestrator()._result(
+            sections=(ReportSection("SERVICES", status="NOT_ASSESSED", message=_service_error_message(error)),),
+            scope=("services",), review_items=1,
+        )
+    _render_result(result)
+
+
+def _show_users_assessment(*, detailed: bool = False) -> None:
+    def build_section(users: tuple[User, ...], sudo_privileges: tuple[SudoPrivilege, ...]) -> ReportSection:
+        return _user_report_section(users, sudo_privileges, detailed=detailed)
+    try:
+        result = _make_orchestrator().run_users(section_builder=build_section, users_collector=collect_local_users, sudo_collector=collect_sudo_privileges)
+    except (OSError, UnicodeError, ValueError) as error:
+        result = _make_orchestrator()._result(
+            sections=(ReportSection("USERS", status="NOT_ASSESSED", message=_user_error_message(error)),),
+            scope=("users", "privileges"), review_items=1,
+        )
+    _render_result(result)
 
 
 def _file_metadata_summary(metadata: FileMetadata) -> str:
@@ -578,66 +591,16 @@ def _filesystem_report_section(
 
 
 def _show_filesystem_assessment() -> None:
-    """Collect and render the fixed sensitive-file metadata assessment."""
+    def build_section(results, assessment, setid_coverage, setid_assessment):
+        return _filesystem_report_section(results, assessment, setid_coverage, setid_assessment, detailed_findings=True)
     try:
-        results = collect_sensitive_file_metadata()
-        assessment = assess_sensitive_files(results)
-
-        setid_coverage = collect_setid_files()
-        setid_assessment = assess_setid_files(setid_coverage)
-
-        section = _filesystem_report_section(
-            results,
-            assessment,
-            setid_coverage=setid_coverage,
-            setid_assessment=setid_assessment,
-            detailed_findings=True,
+        result = _make_orchestrator().run_filesystem(section_builder=build_section, sensitive_file_collector=collect_sensitive_file_metadata, sensitive_file_assessor=assess_sensitive_files, setid_collector=collect_setid_files, setid_assessor=assess_setid_files)
+    except (OSError, UnicodeError, ValueError) as error:
+        result = _make_orchestrator()._result(
+            sections=(ReportSection("FILESYSTEM", status="NOT_ASSESSED", message=f"Filesystem checks could not be fully assessed: {_display_value(str(error))}"),),
+            scope=("filesystem metadata", "set-ID files"), review_items=1,
         )
-    except (OSError, ValueError) as error:
-        section = ReportSection(
-            title="FILESYSTEM",
-            status="Unavailable / NOT_ASSESSED",
-            message=f"Filesystem metadata could not be assessed: {_display_value(str(error))}",
-        )
-    print("\n".join(render_report_section(section, terminal_size()[0])))
-
-
-def _show_ssh_config(config: SSHConfig) -> None:
-    _section("SSH")
-    print(f"  {accent('GLOBAL LOGIN OPTIONS', bold=True)}")
-    root_login = {
-        "yes": "yes",
-        "no": "no",
-        "prohibit-password": "key login only",
-        "forced-commands-only": "restricted key login only",
-    }[config.permit_root_login]
-    password_auth = "yes" if config.password_authentication else "no"
-    empty_passwords = "yes" if config.permit_empty_passwords else "no"
-    public_key_auth = "yes" if config.public_key_authentication else "no"
-    print(f"  {'Option':<27} Value")
-    print(f"  {'─' * 27} {'─' * 10}")
-    print(f"  {'Root login':<27} {root_login}")
-    print(f"  {'Password authentication':<27} {password_auth}")
-    print(f"  {'Public-key authentication':<27} {public_key_auth}")
-    print(f"  {'Permit empty passwords':<27} {empty_passwords}")
-    print("  Values are global sshd options; Match rules may vary by connection.")
-
-
-def _show_findings(findings: tuple[Finding, ...]) -> int:
-    _section("FINDINGS")
-    if not findings:
-        print("  No SSH findings.")
-        return 0
-
-    for finding in findings:
-        print(f"\n  [REVIEW] {finding.title}")
-        print(f"  Rule:           {finding.rule_id}")
-        print(f"  Evidence:       {finding.evidence}")
-        print("  Why it matters:")
-        print(f"    {finding.explanation}")
-        print("  Recommendation:")
-        print(f"    {finding.recommendation}")
-    return len(findings)
+    _render_result(result)
 
 
 def _ssh_error_message(error: Exception) -> str:
@@ -671,23 +634,19 @@ def _ssh_command_detail(error: SSHCommandError) -> str:
 
 
 def _show_ssh_assessment() -> int:
-    """Collect global SSH options and display their current findings."""
     try:
-        ssh_config = collect_ssh_config()
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        _section("SSH")
-        print(f"  {accent('GLOBAL LOGIN OPTIONS', bold=True)}")
-        status = (
-            "NOT ASSESSED / Unavailable"
-            if isinstance(error, SSHGUnsupportedError)
-            else "Unavailable"
+        result = _make_orchestrator().run_ssh(
+            section_builder=_ssh_report_section,
+            findings_builder=_ssh_findings,
+            ssh_collector=collect_ssh_config,
         )
-        print(f"  {status}: {_ssh_error_message(error)}")
-        return 0
-
-    _show_ssh_config(ssh_config)
-    findings = _ssh_findings(ssh_config)
-    return _show_findings(findings)
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        result = _make_orchestrator()._result(
+            sections=(ReportSection("SSH", status="NOT_ASSESSED", message=_ssh_error_message(error)),),
+            scope=("SSH configuration",), review_items=1,
+        )
+    _render_result(result)
+    return len(result.findings)
 
 
 def _ssh_findings(ssh_config: SSHConfig) -> tuple[Finding, ...]:
@@ -750,107 +709,58 @@ def _ssh_report_section(config: SSHConfig) -> ReportSection:
 
 
 def _show_scan() -> None:
-    """Collect existing assessment data and render a structured report."""
-    try:
-        system_info = collect_system_info()
-    except NotImplementedError:
-        report = ScanReport(
-            host=None,
-            host_message="Host facts are supported on Linux only.",
-            sections=(),
-            findings=(),
-            scope=("system facts", "users", "services", "SSH configuration", "filesystem metadata", "set-ID files"),
-        )
-        print("\n".join(render_scan_report(report, terminal_size()[0])))
-        return
-
-    service_section: ReportSection
-    try:
-        services = collect_services()
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        service_section = ReportSection(
-            title="SERVICES",
-            message=_service_error_message(error),
-            status="Unavailable",
-        )
-    else:
-        service_section = _service_report_section(services)
-
-    try:
-        users = collect_local_users()
-        sudo_privileges = collect_sudo_privileges(users)
-        user_section = _user_report_section(users, sudo_privileges)
-    except (OSError, UnicodeError, ValueError) as error:
-        user_section = ReportSection(
-            title="USERS",
-            message=_user_error_message(error),
-            status="Unavailable / NOT_ASSESSED",
-        )
-
-    try:
-        filesystem_results = collect_sensitive_file_metadata()
-        filesystem_assessment = assess_sensitive_files(filesystem_results)
-        setid_coverage = collect_setid_files()
-        setid_assessment = assess_setid_files(setid_coverage)
-        filesystem_section = _filesystem_report_section(
-            filesystem_results,
-            filesystem_assessment,
-            setid_coverage=setid_coverage,
-            setid_assessment=setid_assessment,
-        )
-        filesystem_findings = (
-            filesystem_assessment.findings + setid_assessment.findings
-        )
-    except (OSError, ValueError) as error:
-        filesystem_section = ReportSection(
-            title="FILESYSTEM",
-            message=f"Filesystem metadata could not be assessed: {_display_value(str(error))}",
-            status="Unavailable / NOT_ASSESSED",
-        )
-        filesystem_findings = ()
-
-    findings: tuple[Finding, ...] = filesystem_findings
-    ssh_section: ReportSection
-    try:
-        ssh_config = collect_ssh_config()
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        status = (
-            "NOT ASSESSED / Unavailable"
-            if isinstance(error, SSHGUnsupportedError)
-            else "Unavailable"
-        )
-        ssh_section = ReportSection(
-            title="SSH",
-            status=status,
-            message=_ssh_error_message(error),
-        )
-    else:
-        ssh_section = _ssh_report_section(ssh_config)
-        findings += _ssh_findings(ssh_config)
-
-    report = ScanReport(
-        host=system_info,
-        sections=(user_section, service_section, ssh_section, filesystem_section),
-        findings=findings,
-        scope=("system facts", "users", "services", "SSH configuration", "filesystem metadata", "set-ID files"),
+    """Run the complete assessment through the shared orchestrator."""
+    result = _make_orchestrator().run_full_scan(
+        users_section_builder=lambda users, sudo: _user_report_section(users, sudo),
+        filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
+            results, assessment, coverage, setid, detailed_findings=True
+        ),
+        ssh_section_builder=_ssh_report_section,
+        ssh_findings_builder=_ssh_findings,
+        service_section_builder=_service_report_section,
+        host_section_builder=lambda info: ReportSection(
+            title="SYSTEM",
+            facts=(
+                ("Hostname", _display_value(info.hostname)),
+                ("Distribution", _display_value(info.distribution) + (f" ({_display_value(info.distribution_version)})" if info.distribution_version else "")),
+                ("Kernel", _display_value(info.kernel_release)),
+                ("Architecture", _display_value(info.architecture)),
+                ("Uptime", _format_uptime(info.uptime_seconds)),
+            ),
+        ),
+        host_collector=collect_system_info,
+        services_collector=collect_services,
+        users_collector=collect_local_users,
+        sudo_collector=collect_sudo_privileges,
+        sensitive_file_collector=collect_sensitive_file_metadata,
+        sensitive_file_assessor=assess_sensitive_files,
+        setid_collector=collect_setid_files,
+        setid_assessor=assess_setid_files,
+        ssh_collector=collect_ssh_config,
     )
-    print("\n".join(render_scan_report(report, terminal_size()[0])))
+    _render_result(result)
 
 
 def _show_presentation() -> None:
-    """Render the initial Vulpnix screen."""
+    """Render the Vulpnix shell header and current privilege mode."""
     top = "╭" + "─" * _TITLE_BOX_WIDTH + "╮"
     bottom = "╰" + "─" * _TITLE_BOX_WIDTH + "╯"
+    context = current_privilege_context()
     print(_PRESENTATION_INDENT + accent(top))
-    for label, bold in (("VULPNIX", True), ("Linux host risk assessment", False)):
-        padding = " " * (_TITLE_BOX_WIDTH - len(label) - 2)
-        line = "│ " + label + padding + " │"
-        print(_PRESENTATION_INDENT + accent(line, bold=bold))
+    for label in ("VULPNIX", "Linux security assessment"):
+        padding = " " * max(_TITLE_BOX_WIDTH - len(label) - 2, 0)
+        print(_PRESENTATION_INDENT + accent(f"│ {label}{padding} │", bold=label == "VULPNIX"))
     print(_PRESENTATION_INDENT + accent(bottom))
+    print(_PRESENTATION_INDENT + f"Mode: {context.mode} · UID: {context.uid}")
+    if not context.privileged:
+        print(_PRESENTATION_INDENT + "Some checks may require elevated privileges: sudo vulpnix")
     print()
-
-    for row in _FOX_ART:
-        print(_PRESENTATION_INDENT + accent(row))
+    if terminal_size()[0] >= 105:
+        for row in _FOX_ART:
+            print(_PRESENTATION_INDENT + accent(row))
+    else:
+        print(_PRESENTATION_INDENT + accent("[ VULPNIX ]", bold=True))
+        print(_PRESENTATION_INDENT + "Terminal width is too narrow for the full logo.")
 
 
 _COMMANDS = (
@@ -1184,6 +1094,8 @@ def _read_command(
 
 
 def _run_interactive_shell() -> None:
+    global _LIVE_PROGRESS
+    _LIVE_PROGRESS = True
     output_lines: list[str] = []
     history: list[str] = []
     _, presentation = _capture_output(_show_presentation)
@@ -1196,6 +1108,7 @@ def _run_interactive_shell() -> None:
             except (EOFError, KeyboardInterrupt):
                 _append_output(output_lines, "\nExiting Vulpnix.\n")
                 _render_shell(output_lines, "", 0, 0)
+                _LIVE_PROGRESS = False
                 return
 
             entered = f"{accent('vulpnix>', bold=True)} {command}"
@@ -1207,6 +1120,7 @@ def _run_interactive_shell() -> None:
             _append_output(output_lines, output)
             if not keep_running:
                 _render_shell(output_lines, "", 0, 0)
+                _LIVE_PROGRESS = False
                 return
 
 
