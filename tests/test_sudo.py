@@ -53,6 +53,18 @@ User alice may run the following commands on host-a:
         self.assertIs(result.status, SudoPrivilegeStatus.NO_PRIVILEGES)
         self.assertEqual(result.host, "host-a")
 
+    def test_explicit_policy_denial_with_zero_exit_code_means_no_privileges(self) -> None:
+        result = parse_sudo_listing(
+            "bin",
+            "",
+            "User bin is not allowed to run sudo on archlinux.\n",
+            returncode=0,
+        )
+
+        self.assertIs(result.status, SudoPrivilegeStatus.NO_PRIVILEGES)
+        self.assertEqual(result.host, "archlinux")
+        self.assertEqual(result.reason, "sudo explicitly reported no allowed commands")
+
     def test_password_required_is_not_assessed(self) -> None:
         result = parse_sudo_listing(
             "alice", "", "sudo: a password is required\n", returncode=1

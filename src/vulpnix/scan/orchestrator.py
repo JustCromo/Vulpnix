@@ -13,6 +13,10 @@ from vulpnix.collectors import (
     collect_sudo_privileges,
     collect_system_info,
 )
+from vulpnix.collectors.hardening import collect_sysctl_observations
+from vulpnix.collectors.network import collect_network_snapshot
+from vulpnix.collectors.ssh_keys import collect_ssh_host_key_metadata
+from vulpnix.collectors.systemd_security import collect_service_unit_file_metadata
 from vulpnix.findings import Finding
 from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
 from vulpnix.models import (
@@ -24,6 +28,12 @@ from vulpnix.models import (
     SudoPrivilegeStatus,
     SystemInfo,
     User,
+    HardeningAssessment,
+    NetworkSnapshot,
+    SSHHostKeyAssessment,
+    SSHHostKeyObservation,
+    UnitFileAssessment,
+    UnitFileObservation,
 )
 from vulpnix.rules.filesystem import (
     FilesystemAssessment,
@@ -31,6 +41,9 @@ from vulpnix.rules.filesystem import (
     assess_sensitive_files,
     assess_setid_files,
 )
+from vulpnix.rules.hardening import assess_kernel_hardening
+from vulpnix.rules.ssh_keys import assess_ssh_host_key_metadata
+from vulpnix.rules.systemd_security import assess_systemd_unit_metadata
 from vulpnix.scan.privilege import current_privilege_context
 from vulpnix.scan.progress import ScanProgress, ScanStage
 from vulpnix.scan.result import ScanResult
@@ -49,6 +62,10 @@ FilesystemSectionBuilder = Callable[
 ]
 ServiceSectionBuilder = Callable[[tuple[Service, ...]], ReportSection]
 HostSectionBuilder = Callable[[SystemInfo], ReportSection]
+HardeningSectionBuilder = Callable[[HardeningAssessment], ReportSection]
+NetworkSectionBuilder = Callable[[NetworkSnapshot], ReportSection]
+SSHHostKeySectionBuilder = Callable[[SSHHostKeyAssessment], ReportSection]
+UnitFileSectionBuilder = Callable[[UnitFileAssessment], ReportSection]
 
 
 class ScanOrchestrator:
@@ -87,7 +104,7 @@ class ScanOrchestrator:
             self._emit(ScanStage.ERROR, f"Host assessment failed: {error}")
             raise
         self._emit(ScanStage.COMPLETED, "Host assessment completed")
-        return self._result(sections=(section,), scope=("system facts",))
+        return self._result(sections=(section,), scope=("system facts",), host=info)
 
     def run_services(self, *, collector: ServicesCollector = collect_services, section_builder: ServiceSectionBuilder) -> ScanResult:
         self._emit(ScanStage.STARTING, "Starting services assessment")
@@ -96,7 +113,7 @@ class ScanOrchestrator:
             services = collector()
             self._emit(ScanStage.ASSESSING, "Assessing service state")
             section = section_builder(services)
-        except (OSError, UnicodeError, ValueError) as error:
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
             self._emit(ScanStage.ERROR, f"Services assessment failed: {error}")
             raise
         self._emit(ScanStage.COMPLETED, "Services assessment completed")
@@ -169,6 +186,119 @@ class ScanOrchestrator:
             scope=("filesystem metadata", "set-ID files"),
             coverage=AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE,
             review_items=review_items,
+        )
+
+    def run_hardening(
+        self,
+        *,
+        section_builder: HardeningSectionBuilder,
+        collector: Callable[[], tuple] = collect_sysctl_observations,
+    ) -> ScanResult:
+        """Collect and assess a fixed allow-list of read-only kernel parameters."""
+        self._emit(ScanStage.STARTING, "Starting kernel hardening assessment")
+        try:
+            self._emit(ScanStage.COLLECTING, "Reading selected kernel parameters")
+            observations = collector()
+            self._emit(ScanStage.ASSESSING, "Assessing kernel hardening settings")
+            assessment = assess_kernel_hardening(observations)
+            section = section_builder(assessment)
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+            self._emit(ScanStage.ERROR, f"Kernel hardening assessment failed: {error}")
+            raise
+        self._emit(ScanStage.COMPLETED, "Kernel hardening assessment completed")
+        unresolved_findings = sum(
+            finding.status.name in {"NOT_ASSESSED", "ERROR"}
+            for finding in assessment.findings
+        )
+        return self._result(
+            sections=(section,),
+            findings=assessment.findings,
+            scope=("kernel hardening",),
+            coverage=AssessmentCoverage.PARTIAL if assessment.incomplete_checks else AssessmentCoverage.COMPLETE,
+            review_items=max(0, assessment.incomplete_checks - unresolved_findings),
+        )
+
+    def run_network(
+        self,
+        *,
+        section_builder: NetworkSectionBuilder,
+        collector: Callable[[], NetworkSnapshot] = collect_network_snapshot,
+    ) -> ScanResult:
+        """Collect the local socket inventory and record limits on process attribution."""
+        self._emit(ScanStage.STARTING, "Starting network exposure assessment")
+        try:
+            self._emit(ScanStage.COLLECTING, "Collecting listening and bound sockets")
+            snapshot = collector()
+            self._emit(ScanStage.ASSESSING, "Classifying socket bind scopes")
+            section = section_builder(snapshot)
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+            self._emit(ScanStage.ERROR, f"Network exposure assessment failed: {error}")
+            raise
+        incomplete = bool(snapshot.review) or (bool(snapshot.endpoints) and not snapshot.process_attribution_complete)
+        self._emit(ScanStage.COMPLETED, "Network exposure assessment completed")
+        return self._result(
+            sections=(section,),
+            scope=("listening sockets", "local bind scope"),
+            coverage=AssessmentCoverage.PARTIAL if incomplete else AssessmentCoverage.COMPLETE,
+            review_items=max(len(snapshot.review), 1 if bool(snapshot.endpoints) and not snapshot.process_attribution_complete else 0),
+        )
+
+    def run_ssh_host_keys(
+        self,
+        *,
+        section_builder: SSHHostKeySectionBuilder,
+        collector: Callable[[], tuple[SSHHostKeyObservation, ...]] = collect_ssh_host_key_metadata,
+    ) -> ScanResult:
+        """Assess SSH host-key ownership and modes without reading key material."""
+        self._emit(ScanStage.STARTING, "Starting SSH host-key metadata assessment")
+        try:
+            self._emit(ScanStage.COLLECTING, "Inspecting SSH host-key metadata")
+            observations = collector()
+            self._emit(ScanStage.ASSESSING, "Assessing key ownership and permissions")
+            assessment = assess_ssh_host_key_metadata(observations)
+            section = section_builder(assessment)
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+            self._emit(ScanStage.ERROR, f"SSH host-key assessment failed: {error}")
+            raise
+        self._emit(ScanStage.COMPLETED, "SSH host-key metadata assessment completed")
+        incomplete = assessment.incomplete_checks
+        unresolved = sum(finding.status.name in {"NOT_ASSESSED", "ERROR"} for finding in assessment.findings)
+        return self._result(
+            sections=(section,),
+            findings=assessment.findings,
+            scope=("SSH host-key metadata",),
+            coverage=AssessmentCoverage.PARTIAL if incomplete else AssessmentCoverage.COMPLETE,
+            review_items=max(0, incomplete - unresolved),
+        )
+
+    def run_service_unit_security(
+        self,
+        *,
+        services: tuple[Service, ...],
+        section_builder: UnitFileSectionBuilder,
+        collector: Callable[[tuple[Service, ...]], tuple[tuple[UnitFileObservation, ...], tuple[str, ...]]] = collect_service_unit_file_metadata,
+    ) -> ScanResult:
+        """Inspect service fragment and drop-in metadata without opening file contents."""
+        self._emit(ScanStage.STARTING, "Starting systemd unit-file assessment")
+        try:
+            self._emit(ScanStage.COLLECTING, "Collecting unit fragment/drop-in metadata")
+            observations, collection_review = collector(services)
+            self._emit(ScanStage.ASSESSING, "Checking unit ownership and write permissions")
+            assessment = assess_systemd_unit_metadata(observations, collection_review)
+            section = section_builder(assessment)
+        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+            self._emit(ScanStage.ERROR, f"Systemd unit-file assessment failed: {error}")
+            raise
+        self._emit(ScanStage.COMPLETED, "Systemd unit-file assessment completed")
+        incomplete = assessment.incomplete_checks or bool(collection_review)
+        unresolved_findings = sum(finding.status.name in {"NOT_ASSESSED", "ERROR"} for finding in assessment.findings)
+        extra_reviews = max(0, len(collection_review) - unresolved_findings)
+        return self._result(
+            sections=(section,),
+            findings=assessment.findings,
+            scope=("systemd unit-file metadata",),
+            coverage=AssessmentCoverage.PARTIAL if incomplete else AssessmentCoverage.COMPLETE,
+            review_items=extra_reviews,
         )
 
     def run_full_scan(

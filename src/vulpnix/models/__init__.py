@@ -15,6 +15,10 @@ from vulpnix.models.service import Service
 from vulpnix.models.ssh import SSHConfig, SSHConnectionContext
 from vulpnix.models.sudo import SudoGrant, SudoPrivilege, SudoPrivilegeStatus
 from vulpnix.models.user import User
+from vulpnix.models.network import ListeningEndpoint, NetworkSnapshot
+from vulpnix.models.hardening import SysctlObservation, HardeningCheck, HardeningAssessment
+from vulpnix.models.ssh_keys import SSHHostKeyObservation, SSHHostKeyCheck, SSHHostKeyAssessment
+from vulpnix.models.systemd_security import UnitFileObservation, UnitFileCheck, UnitFileAssessment
 
 __all__ = [
     "Service",
@@ -31,4 +35,15 @@ __all__ = [
     "SudoPrivilegeStatus",
     "SystemInfo",
     "User",
+    "ListeningEndpoint",
+    "NetworkSnapshot",
+    "SysctlObservation",
+    "HardeningCheck",
+    "HardeningAssessment",
+    "SSHHostKeyObservation",
+    "SSHHostKeyCheck",
+    "SSHHostKeyAssessment",
+    "UnitFileObservation",
+    "UnitFileCheck",
+    "UnitFileAssessment",
 ]

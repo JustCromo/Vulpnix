@@ -7,10 +7,12 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
 from vulpnix.cli.terminal import display_width
 from vulpnix.findings import Finding
-from vulpnix.models import SSHConfig, Service, SystemInfo
+from vulpnix.models import SSHConfig, Service, SystemInfo, ListeningEndpoint, NetworkSnapshot
+from vulpnix.scan.privilege import PrivilegeContext
 
 
 def sample_report() -> ScanReport:
@@ -121,6 +123,9 @@ class FullScanWidthTests(unittest.TestCase):
     def run_scan(self, width: int) -> list[str]:
         output = io.StringIO()
         with (
+            patch_supplementary_collectors(app),
+            patch("vulpnix.scan.orchestrator.current_privilege_context", return_value=PrivilegeContext(1000, "ROOTLESS")),
+            patch.object(app, "collect_network_snapshot", return_value=NetworkSnapshot((ListeningEndpoint("tcp", "LISTEN", "0.0.0.0", 22, "ALL INTERFACES", None, None),), "test fixture", False, ("process ownership may be incomplete without elevated privileges",))),
             patch.object(app, "terminal_size", return_value=(width, 40)),
             patch.object(app, "collect_system_info", return_value=sample_report().host),
             patch.object(app, "collect_local_users", return_value=()),
@@ -157,7 +162,7 @@ class FullScanWidthTests(unittest.TestCase):
             ),
             redirect_stdout(output),
         ):
-            app._show_scan()
+            app._show_scan(detailed=True)
         app._OUTPUT_LAYOUT_CACHE = None
         return app._fit_output_to_width(output.getvalue().splitlines(), width)
 
@@ -204,8 +209,8 @@ class FullScanWidthTests(unittest.TestCase):
             ),
             "FINAL RESULT",
             "REVIEW REQUIRED",
-            "The system could not be fully assessed with the current privileges.",
-            "Use elevated privileges to complete the missing checks: sudo vulpnix",
+            "Some checks could not be completed with the current privileges.",
+            "Use elevated privileges to complete checks that need them: sudo vulpnix",
         ):
             self.assertIn(text, normalized)
             self.assertIn(text, normalized_wide)

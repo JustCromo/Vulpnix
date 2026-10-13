@@ -135,6 +135,24 @@ def parse_sudo_listing(
             diagnostic=diagnostic,
         )
 
+    if returncode == 0:
+        denied = next(
+            (
+                match
+                for line in combined.splitlines()
+                if (match := _DENIED.match(line))
+            ),
+            None,
+        )
+        if denied is not None and denied.group("account") == account:
+            return SudoPrivilege(
+                account,
+                SudoPrivilegeStatus.NO_PRIVILEGES,
+                host=denied.group("host").rstrip("."),
+                reason="sudo explicitly reported no allowed commands",
+                diagnostic=diagnostic,
+            )
+
     if returncode != 0:
         if _PASSWORD_REQUIRED.search(combined):
             reason = "non-interactive listing requires authentication"

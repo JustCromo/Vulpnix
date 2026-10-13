@@ -46,6 +46,7 @@ class ScanReport:
     coverage: AssessmentCoverage = AssessmentCoverage.COMPLETE
     review_items: int = 0
     privilege: PrivilegeContext | None = None
+    details: bool = True
 
 
 def _safe(value: object) -> str:
@@ -231,7 +232,8 @@ def render_scan_report(report: ScanReport, width: int) -> list[str]:
     for section in report.sections:
         lines.extend(render_report_section(section, width))
 
-    lines.extend(("", *_finding_details(report.findings, width), ""))
+    if report.details:
+        lines.extend(("", *_finding_details(report.findings, width), ""))
     summary = build_assessment_summary(
         findings=report.findings,
         coverage=report.coverage,
@@ -249,15 +251,14 @@ def render_scan_report(report: ScanReport, width: int) -> list[str]:
     if report.privilege is not None:
         mode = report.privilege.mode
         lines.extend(_wrap(f"  Execution mode: {mode} (UID {report.privilege.uid})", width - 2))
+    lines.extend(_wrap(summary.description, width - 2, indent="  "))
+    lines.extend(_wrap(summary.action, width - 2, indent="  "))
     if (
         report.privilege is not None
         and not report.privilege.privileged
-        and summary.result.value == "REVIEW REQUIRED"
+        and report.coverage is AssessmentCoverage.PARTIAL
     ):
-        lines.extend(_wrap("The system could not be fully assessed with the current privileges.", width - 2, indent="  "))
-        lines.extend(_wrap("Use elevated privileges to complete the missing checks: sudo vulpnix", width - 2, indent="  "))
-    else:
-        lines.extend(_wrap(summary.description, width - 2, indent="  "))
-        lines.extend(_wrap(summary.action, width - 2, indent="  "))
+        lines.extend(_wrap("Some checks could not be completed with the current privileges.", width - 2, indent="  "))
+        lines.extend(_wrap("Use elevated privileges to complete checks that need them: sudo vulpnix", width - 2, indent="  "))
 
     return lines

@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors.ssh import (
     SSHCommandError,
     SSHGUnsupportedError,
@@ -124,6 +125,7 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
         )
         output = io.StringIO()
         with (
+            patch_supplementary_collectors(app),
             patch.object(app, "collect_system_info", return_value=SystemInfo()),
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),
@@ -240,6 +242,7 @@ class SSHCommandTests(unittest.TestCase):
             patch.object(app, "check_ssh_password_authentication", return_value=()),
             patch.object(app, "check_ssh_empty_passwords", return_value=()),
             patch.object(app, "check_ssh_public_key_authentication", return_value=()),
+            patch.object(app, "collect_ssh_host_key_metadata", return_value=()),
             redirect_stdout(output),
         ):
             app._show_ssh_assessment()
@@ -252,7 +255,7 @@ class SSHCommandTests(unittest.TestCase):
 
 class CommandCompletionTests(unittest.TestCase):
     def test_single_tab_completes_a_unique_subcommand(self) -> None:
-        keys = iter(("s", "c", "a", "n", " ", "h", "\t", "\n"))
+        keys = iter(("s", "c", "a", "n", " ", "h", "o", "\t", "\n"))
         with patch.object(app, "read_key", side_effect=lambda **_kwargs: next(keys)):
             with patch.object(app, "_render_shell"):
                 command, _ = app._read_command([], [], 0)

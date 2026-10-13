@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors import filesystem
 from vulpnix.collectors.filesystem import collect_sensitive_file_metadata
 from vulpnix.models import (
@@ -309,6 +310,7 @@ class FilesystemCLITests(unittest.TestCase):
         output = io.StringIO()
         records = (result("/etc/passwd", 0o664),)
         with (
+            patch_supplementary_collectors(app),
             patch.object(app, "collect_system_info", return_value=SystemInfo()),
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),

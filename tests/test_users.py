@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors.users import collect_local_users
 from vulpnix.models import SudoGrant, SudoPrivilege, SudoPrivilegeStatus
 from vulpnix.parsers.users import parse_local_users
@@ -208,6 +209,7 @@ class UsersCLItests(unittest.TestCase):
 
         output = io.StringIO()
         with (
+            patch_supplementary_collectors(app),
             patch.object(app, "collect_system_info", return_value=SystemInfo()),
             patch.object(app, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
             patch.object(app, "collect_sudo_privileges", return_value=()),

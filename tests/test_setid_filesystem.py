@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors import setid
 from vulpnix.collectors.setid import collect_setid_files
 from vulpnix.findings import FindingStatus
@@ -297,7 +298,7 @@ class SetIdCliTests(unittest.TestCase):
         ):
             app._dispatch_command("scan filesystem")
         rendered = output.getvalue()
-        self.assertIn("[FAIL] Active set-ID ELF file is world-writable", rendered)
+        self.assertIn("FAIL · Active set-ID ELF file is world-writable (FS-SETID-WORLD-WRITE-001)", rendered)
         self.assertIn("FS-SETID-WORLD-WRITE-001", rendered)
         self.assertIn("Set-ID regular files: 11", rendered)
         self.assertNotIn("ordinary-suid", rendered)
@@ -311,6 +312,7 @@ class SetIdCliTests(unittest.TestCase):
         coverage = FilesystemCoverage((item,), CoverageStatus.COLLECTED, ("/usr",), 4, 0.02)
         output = io.StringIO()
         with (
+            patch_supplementary_collectors(app),
             patch.object(app, "collect_system_info", return_value=SystemInfo()),
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),
@@ -321,7 +323,7 @@ class SetIdCliTests(unittest.TestCase):
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
         ):
-            app._show_scan()
+            app._show_scan(detailed=True)
         rendered = output.getvalue()
         self.assertIn("✗ ISSUES DETECTED", rendered)
         self.assertIn("⚠ FAIL · Active set-ID ELF file is world-writable", rendered)

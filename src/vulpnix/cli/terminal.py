@@ -1,6 +1,8 @@
 """Terminal-specific presentation helpers for the Vulpnix CLI."""
 
 from contextlib import contextmanager
+import base64
+from dataclasses import dataclass
 import os
 import re
 import select
@@ -15,8 +17,8 @@ from collections.abc import Iterator
 
 _ALT_SCREEN_ENTER = "\033[?1049h"
 _ALT_SCREEN_EXIT = "\033[?1049l"
-_MOUSE_ON = "\033[?1000h\033[?1006h"
-_MOUSE_OFF = "\033[?1006l\033[?1000l"
+_MOUSE_ON = "\033[?1002h\033[?1006h"
+_MOUSE_OFF = "\033[?1006l\033[?1002l"
 _RESET_STYLE = "\033[0m"
 _ANSI_SEQUENCE = re.compile(r"\033\[[0-?]*[ -/]*[@-~]")
 
@@ -49,7 +51,7 @@ def clear_screen() -> None:
 
 @contextmanager
 def raw_input_mode() -> Iterator[None]:
-    """Read key and mouse events without terminal line buffering or echo."""
+    """Read key events without terminal line buffering or echo."""
     file_descriptor = sys.stdin.fileno()
     previous_settings = termios.tcgetattr(file_descriptor)
     try:
@@ -78,6 +80,164 @@ def read_key(timeout: float | None = None) -> str | None:
         if len(sequence) > 2 and "@" <= character <= "~":
             break
     return sequence
+
+
+
+@dataclass(frozen=True, slots=True)
+class MouseTextSelection:
+    """Text selection using zero-based output-line and terminal-column positions."""
+
+    anchor: tuple[int, int]
+    focus: tuple[int, int]
+
+    @property
+    def bounds(self) -> tuple[tuple[int, int], tuple[int, int]]:
+        """Return selection endpoints in reading order."""
+        return tuple(sorted((self.anchor, self.focus)))
+
+    def column_range(self, line: int) -> tuple[int, int | None] | None:
+        """Return inclusive selected columns on a line; None means through line end."""
+        start, end = self.bounds
+        if line < start[0] or line > end[0]:
+            return None
+
+        first_column = start[1] if line == start[0] else 0
+        last_column = end[1] if line == end[0] else None
+        return first_column, last_column
+
+    def contains(self, line: int, column: int) -> bool:
+        """Return whether a terminal cell is included in this selection."""
+        columns = self.column_range(line)
+        if columns is None:
+            return False
+        first_column, last_column = columns
+        return column >= first_column and (
+            last_column is None or column <= last_column
+        )
+
+
+def _parse_sgr_mouse_event(
+    sequence: str,
+) -> tuple[int, int, int, bool] | None:
+    """Parse an SGR mouse event as (button, x, y, released)."""
+    match = re.fullmatch(
+        r"\033\[<(\d+);(\d+);(\d+)([Mm])",
+        sequence,
+    )
+    if match is None:
+        return None
+
+    button, x, y = (int(match.group(index)) for index in (1, 2, 3))
+    if x < 1 or y < 1:
+        return None
+
+    return button, x, y, match.group(4) == "m"
+
+
+
+def highlight_columns(text: str, start: int, end: int) -> str:
+    """Render a zero-based, end-exclusive column range using reverse video."""
+    plain = _ANSI_SEQUENCE.sub("", text)
+    start = max(0, start)
+    end = max(start, end)
+    if end == start:
+        return plain
+
+    output: list[str] = []
+    column = 0
+    highlighted = False
+
+    for character in plain:
+        width = (
+            0 if unicodedata.combining(character)
+            else 2 if unicodedata.east_asian_width(character) in {"W", "F"}
+            else 1
+        )
+        if width == 0:
+            output.append(character)
+            continue
+
+        selected = column < end and column + width > start
+        if selected != highlighted:
+            output.append("\033[7m" if selected else "\033[27m")
+            highlighted = selected
+        output.append(character)
+        column += width
+
+    if highlighted:
+        output.append("\033[27m")
+    return "".join(output)
+
+
+
+def copy_text_to_clipboard(text: str) -> bool:
+    """Request a clipboard copy through the terminal's OSC 52 interface."""
+    if not text or not sys.stdout.isatty():
+        return False
+
+    encoded = base64.b64encode(text.encode("utf-8")).decode("ascii")
+    sys.stdout.write(f"\033]52;c;{encoded}\033\\")
+    sys.stdout.flush()
+    return True
+
+
+
+def extract_selected_text(
+    lines: list[str],
+    selection: MouseTextSelection,
+) -> str:
+    """Extract selected visible text, preserving line breaks and Unicode width."""
+    if selection.anchor == selection.focus:
+        return ""
+
+    start, end = selection.bounds
+    if start[0] < 0 or end[0] >= len(lines):
+        return ""
+
+    selected_lines: list[str] = []
+    for line_number in range(start[0], end[0] + 1):
+        plain = _ANSI_SEQUENCE.sub("", lines[line_number])
+        column_range = selection.column_range(line_number)
+        if column_range is None:
+            continue
+
+        first_column, last_column = column_range
+        end_column = (
+            display_width(plain)
+            if last_column is None
+            else last_column + 1
+        )
+
+        selected_characters: list[str] = []
+        column = 0
+        previous_character_selected = False
+
+        for character in plain:
+            width = (
+                0
+                if unicodedata.combining(character)
+                else 2
+                if unicodedata.east_asian_width(character) in {"W", "F"}
+                else 1
+            )
+            if width == 0:
+                if previous_character_selected:
+                    selected_characters.append(character)
+                continue
+
+            selected = (
+                column < end_column
+                and column + width > first_column
+            )
+            if selected:
+                selected_characters.append(character)
+
+            previous_character_selected = selected
+            column += width
+
+        selected_lines.append("".join(selected_characters))
+
+    return "\n".join(selected_lines)
 
 
 def terminal_size() -> tuple[int, int]:

@@ -1,7 +1,8 @@
 # Vulpnix Development Roadmap
 
 This document is the source of truth for the project's milestones and design
-constraints.
+constraints. The acceptance criteria in [QUALITY.md](QUALITY.md) are mandatory
+for every milestone.
 
 ## Core principles
 
@@ -72,11 +73,26 @@ ScanOrchestrator
 The terminal CLI displays live progress in interactive mode and remains
 usable in non-interactive/test environments.
 
+## Milestone and qualification status
+
+`Implementation status` describes whether the planned functionality has been
+built. `Quality qualification` describes whether that functionality has passed
+the acceptance gate in `QUALITY.md`. These statuses are separate; implementation
+completion alone does not establish qualification.
+
+M1–M4 and M4.5 are implementation-complete, but their retrospective quality
+qualification is **PENDING REVIEW**. The initial M5 implementation is now being
+built in parallel at the user's request; this does not waive the acceptance gate
+for qualification or release. This is a verification gate, not an assumption
+that existing implementations are defective.
+
 ## Milestones
 
 ### M1 — Foundation
 
 **Status: COMPLETE**
+
+**Quality qualification: PENDING REVIEW**
 
 Interactive shell, package structure, basic commands, Linux-general design,
 initial testing, and terminal foundations.
@@ -85,6 +101,8 @@ initial testing, and terminal foundations.
 
 **Status: COMPLETE**
 
+**Quality qualification: PENDING REVIEW**
+
 Host facts, service inventory, OpenSSH effective configuration, SSH rules,
 portable capability handling, and SSH parsing/failure tests.
 
@@ -92,12 +110,16 @@ portable capability handling, and SSH parsing/failure tests.
 
 **Status: COMPLETE**
 
+**Quality qualification: PENDING REVIEW**
+
 Local users, UID 0 accounts, privileged accounts, sudo inspection, account state,
 group information, review semantics, and adversarial tests.
 
 ### M4 — Filesystem Security
 
 **Status: COMPLETE**
+
+**Quality qualification: PENDING REVIEW**
 
 Sensitive file metadata assessment for authentication/security files, safe
 symlink handling, ownership/mode checks, bounded SUID/SGID discovery, ELF
@@ -110,6 +132,8 @@ The milestone is considered complete without adding an aggregate risk score.
 
 **Status: COMPLETE**
 
+**Quality qualification: PENDING REVIEW**
+
 Shared scan orchestration, normalized `ScanResult`, lifecycle progress,
 consistent individual/full scan behavior, privilege context, rootless review
 messaging, readable single-column terminal reporting, final-result rendering,
@@ -117,24 +141,38 @@ updated logo, documentation, and architecture tests.
 
 ### M5 — Network Exposure
 
-**Status: NEXT / ACTIVE**
+**Status: IN PROGRESS — initial socket inventory implemented**
+
+**Quality qualification: PENDING REVIEW**
 
 **Purpose:** understand what the Linux host exposes locally and over the network.
 
-Objectives:
+Initial implementation now includes:
 
-- Enumerate network interfaces, addresses, and state.
-- Detect listening TCP/UDP sockets and normalize protocol/address/port/state.
-- Identify the process/service owning a socket where possible.
-- Distinguish loopback from LAN/all-interface exposure.
-- Classify exposure as `LOCAL`, `NETWORK`, `EXTERNAL`, or `UNKNOWN`.
-- Detect firewall implementations and state without assuming a specific tool.
+- Listening TCP and bound UDP socket inventory via `ss`, with a `/proc/net`
+  fallback when `ss` is unavailable or unusable.
+- Normalized protocol/address/port/state and loopback/non-loopback/all-interface
+  bind scope.
+- Best-effort process ownership attribution; incomplete attribution results in
+  partial coverage rather than a false claim of completeness.
+- Selected kernel-hardening `sysctl` checks.
+- Metadata-only assessment of SSH host private-key files and systemd service
+  unit fragments/drop-ins.
+- Compact default terminal output plus expanded output with `--details`.
+
+Remaining M5 objectives:
+
+- Enumerate network interfaces, IP addresses, and operational state.
+- Detect firewall implementations and collect their configured state safely.
+- Keep bind scope distinct from claims about internet reachability.
 - Never interpret a listening port alone as a vulnerability.
-- Preserve rootless/privileged coverage semantics.
+- Preserve rootless/privileged coverage semantics across commands and full scan.
 
-Expected deliverables: normalized endpoints, exposure classification, firewall
-capability detection, explainable findings, and tests for IPv4/IPv6,
-loopback/all-interface exposure, unavailable tools, and permission limits.
+The implemented socket inventory is an initial M5 component, not a complete
+network-exposure or firewall assessment. Expected deliverables include stable
+normalized interface/socket/firewall observations, explainable rules, and tests
+for IPv4/IPv6, loopback/all-interface exposure, unavailable tools, and permission
+limits.
 
 ### M6 — Packages & CVE
 
@@ -196,4 +234,5 @@ Vulpnix Core
 7. Prefer small, testable changes and adversarial tests.
 8. Run the full test suite and `git diff --check` before milestone completion.
 
-**Current active milestone: M5 — Network Exposure.**
+**Current focus: retroactive quality qualification for M1–M4 and M4.5.**
+M5 implementation starts after the initial review is recorded.

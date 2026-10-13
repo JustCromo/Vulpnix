@@ -10,6 +10,22 @@ from vulpnix.scan.privilege import PrivilegeContext
 
 
 class ScanArchitectureTests(unittest.TestCase):
+    def test_services_subprocess_failure_emits_error_and_propagates(self):
+        import subprocess
+
+        events = []
+
+        def failing_collector():
+            raise subprocess.TimeoutExpired(cmd="systemctl", timeout=10)
+
+        with self.assertRaises(subprocess.TimeoutExpired):
+            ScanOrchestrator(progress_callback=events.append).run_services(
+                collector=failing_collector,
+                section_builder=lambda _: ReportSection("SERVICES"),
+            )
+
+        self.assertEqual(events[-1].stage, ScanStage.ERROR)
+
     def test_users_lifecycle_is_ordered_and_returns_privilege_context(self):
         events = []
         collector = Mock(return_value=())
