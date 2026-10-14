@@ -3,6 +3,7 @@
 import io
 import re
 import unittest
+from dataclasses import replace
 from contextlib import redirect_stdout
 from unittest.mock import patch
 
@@ -10,7 +11,8 @@ from vulpnix.cli import app
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
 from vulpnix.cli.terminal import display_width
-from vulpnix.findings import Finding
+from vulpnix.findings import Finding, FindingStatus
+from vulpnix.risk import assess_findings
 from vulpnix.models import SSHConfig, Service, SystemInfo, ListeningEndpoint, NetworkSnapshot
 from vulpnix.scan.privilege import PrivilegeContext
 
@@ -119,6 +121,86 @@ class ScanReportLayoutTests(unittest.TestCase):
         self.assertIn("Recommendation:", joined)
 
 
+
+class RiskAssessmentReportTests(unittest.TestCase):
+    def make_finding(self, rule_id, status):
+        return Finding(
+            rule_id=rule_id,
+            title="Test security finding",
+            evidence="Deterministic test evidence",
+            explanation="Test explanation.",
+            recommendation="Test recommendation.",
+            status=status,
+        )
+
+    def make_report(self, finding):
+        assessment = assess_findings((finding,))
+        return replace(
+            sample_report(),
+            findings=(finding,),
+            risk_assessment=assessment,
+        )
+
+    def test_documented_risk_profile_renders_score_and_rationale(self) -> None:
+        finding = self.make_finding(
+            "FS-SETID-WORLD-WRITE-001",
+            FindingStatus.FAIL,
+        )
+        report = self.make_report(finding)
+
+        outputs = {}
+        for width in (120, 80, 56, 36, 20):
+            lines = render_scan_report(report, width)
+            self.assertTrue(
+                all(display_width(line) <= width for line in lines),
+                f"Report exceeded terminal width {width}",
+            )
+            outputs[width] = re.sub(r"\s+", " ", "\n".join(lines))
+
+        joined = outputs[80]
+        self.assertIn("RISK ASSESSMENT", joined)
+        self.assertIn("FS-SETID-WORLD-WRITE-001", joined)
+        self.assertIn("CRITICAL", joined)
+        self.assertIn("Score: 5 × 5 = 25", joined)
+        self.assertIn("Rationale:", joined)
+        self.assertIn("not a statistical measurement", joined)
+
+    def test_long_risk_rule_id_stays_together_in_table(self) -> None:
+        rule_id = "KERNEL-HARDENING-KERNEL-KPTR-RESTRICT"
+        finding = self.make_finding(rule_id, FindingStatus.FAIL)
+        report = self.make_report(finding)
+        lines = render_scan_report(report, 80)
+
+        self.assertTrue(any(rule_id in line for line in lines))
+        self.assertTrue(all(display_width(line) <= 80 for line in lines))
+
+    def test_review_finding_is_not_given_a_risk_score(self) -> None:
+        finding = self.make_finding(
+            "SSH-PASSWORD-AUTH-001",
+            FindingStatus.REVIEW,
+        )
+        report = self.make_report(finding)
+        joined = "\n".join(render_scan_report(report, 80))
+
+        self.assertIn("Scored findings: 0", joined)
+        self.assertIn("No verified FAIL findings", joined)
+        self.assertNotIn("Score: 5 × 5", joined)
+        self.assertNotIn("Verified FAIL findings not scored", joined)
+
+    def test_unprofiled_verified_finding_is_listed_without_score(self) -> None:
+        finding = self.make_finding(
+            "UNPROFILED-TEST-001",
+            FindingStatus.FAIL,
+        )
+        report = self.make_report(finding)
+        joined = "\n".join(render_scan_report(report, 80))
+
+        self.assertIn("Verified FAIL findings not scored", joined)
+        self.assertIn("UNPROFILED-TEST-001", joined)
+        self.assertNotIn("Rationale: ", joined)
+
+
+
 class FullScanWidthTests(unittest.TestCase):
     def run_scan(self, width: int) -> list[str]:
         output = io.StringIO()
@@ -126,6 +208,19 @@ class FullScanWidthTests(unittest.TestCase):
             patch_supplementary_collectors(app),
             patch("vulpnix.scan.orchestrator.current_privilege_context", return_value=PrivilegeContext(1000, "ROOTLESS")),
             patch.object(app, "collect_network_snapshot", return_value=NetworkSnapshot((ListeningEndpoint("tcp", "LISTEN", "0.0.0.0", 22, "ALL INTERFACES", None, None),), "test fixture", False, ("process ownership may be incomplete without elevated privileges",))),
+            patch.object(
+                app,
+                "collect_firewall_snapshot",
+                return_value=app.FirewallSnapshot(
+                    (
+                        app.FirewallObservation(
+                            "nftables", "EMPTY", "test fixture", "Fixture observation",
+                            ("tables=0", "chains=0", "rules=0", "families=ip"),
+                        ),
+                    ),
+                    (),
+                ),
+            ),
             patch.object(app, "terminal_size", return_value=(width, 40)),
             patch.object(app, "collect_system_info", return_value=sample_report().host),
             patch.object(app, "collect_local_users", return_value=()),
@@ -207,6 +302,7 @@ class FullScanWidthTests(unittest.TestCase):
                 "Review whether password login is required; consider key-based "
                 "authentication and any additional access controls in use."
             ),
+            "RISK ASSESSMENT",
             "FINAL RESULT",
             "REVIEW REQUIRED",
             "Some checks could not be completed with the current privileges.",

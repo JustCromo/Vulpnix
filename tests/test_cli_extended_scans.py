@@ -9,6 +9,8 @@ from vulpnix.cli import app
 from vulpnix.findings import FindingStatus
 from vulpnix.models import (
     ListeningEndpoint,
+    NetworkInterface,
+    NetworkInterfaceSnapshot,
     NetworkSnapshot,
     SSHConfig,
     SSHHostKeyObservation,
@@ -32,6 +34,8 @@ class ExtendedScanCommandTests(unittest.TestCase):
             app._dispatch_command("scan hardening --details")
 
         self.assertIn("KERNEL HARDENING", compact.getvalue())
+        self.assertIn("Checks passing", compact.getvalue())
+        self.assertNotIn("Expected values", compact.getvalue())
         self.assertNotIn("CHECK DETAILS", compact.getvalue())
         self.assertIn("CHECK DETAILS", detailed.getvalue())
         self.assertIn("kernel.dmesg_restrict", detailed.getvalue())
@@ -42,17 +46,56 @@ class ExtendedScanCommandTests(unittest.TestCase):
             for index in range(1, 11)
         )
         snapshot = NetworkSnapshot(endpoints, "test fixture", True)
+        firewall_snapshot = app.FirewallSnapshot(
+            (
+                app.FirewallObservation(
+                    "nftables",
+                    "CONFIGURED",
+                    "test fixture",
+                    "Test ruleset collected",
+                    ("tables=1", "chains=1", "rules=1", "families=ip"),
+                ),
+            ),
+            (),
+        )
+        interface_snapshot = NetworkInterfaceSnapshot(
+            (
+                NetworkInterface(
+                    "test0",
+                    "UP",
+                    ("UP", "LOWER_UP"),
+                    ("192.0.2.10/24",),
+                ),
+            ),
+            "test fixture",
+        )
         compact = io.StringIO()
-        with patch.object(app, "collect_network_snapshot", return_value=snapshot), redirect_stdout(compact):
+        with (
+            patch.object(app, "collect_network_snapshot", return_value=snapshot),
+            patch.object(app, "collect_network_interfaces", return_value=interface_snapshot),
+            patch.object(app, "collect_firewall_snapshot", return_value=firewall_snapshot),
+            redirect_stdout(compact),
+        ):
             app._dispatch_command("scan network")
         detailed = io.StringIO()
-        with patch.object(app, "collect_network_snapshot", return_value=snapshot), redirect_stdout(detailed):
+        with (
+            patch.object(app, "collect_network_snapshot", return_value=snapshot),
+            patch.object(app, "collect_network_interfaces", return_value=interface_snapshot),
+            patch.object(app, "collect_firewall_snapshot", return_value=firewall_snapshot),
+            redirect_stdout(detailed),
+        ):
             app._dispatch_command("scan network --details")
 
         self.assertIn("NETWORK EXPOSURE", compact.getvalue())
+        self.assertIn("NETWORK INTERFACES", compact.getvalue())
+        self.assertIn("FIREWALL CONFIGURATION", compact.getvalue())
+        self.assertIn("test0", compact.getvalue())
         self.assertIn("additional socket(s) omitted", compact.getvalue())
         self.assertNotIn("demo10", compact.getvalue())
         self.assertIn("demo10", detailed.getvalue())
+        self.assertIn("192.0.2.10/24", detailed.getvalue())
+        self.assertIn("nftables", detailed.getvalue())
+        self.assertIn("rules=1", detailed.getvalue())
         self.assertIn("not automatically a vulnerability", detailed.getvalue())
 
     def test_service_missing_systemctl_is_reported_without_crashing(self):

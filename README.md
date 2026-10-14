@@ -80,10 +80,11 @@ inventories where available; it does not change the security rules.
   automatically treated as vulnerabilities.
 - **`scan network`** inventories listening TCP and bound UDP sockets, their
   address/port and bind scope, and process attribution where available. It uses
-  `ss` when usable and falls back to `/proc/net` when possible. A bind address is
-  not proof that a service is reachable from the internet. Firewall-policy and
-  interface-address assessment remain future work; this command is not yet a
-  complete network-exposure assessment.
+  `ss` when usable and falls back to `/proc/net` when possible. It also inventories
+  network interfaces and addresses, and inspects supported firewall ruleset
+  sources in read-only mode. These inventories do not prove internet reachability
+  or effective firewall protection; complete firewall-policy validation remains
+  future work.
 - **`scan service`** summarizes service state and startup enablement.
   `scan service --details` additionally checks metadata for systemd unit
   fragments and drop-ins. File contents are not read.
@@ -111,8 +112,48 @@ inventories where available; it does not change the security rules.
 
 `REVIEW`, `NOT_ASSESSED`, and `ERROR` are not confirmed vulnerabilities. A
 listening port, active service, non-default setting, or SUID/SGID bit is not by
-itself proof of a vulnerability. No aggregate risk score or CVE engine is
-implemented yet.
+itself proof of a vulnerability.
+
+Verified `FAIL` findings with documented risk profiles can receive a qualitative
+score using impact (1–5) multiplied by probability (1–5). These factors express
+a documented assessment, not statistical probabilities. Findings without a
+complete valid profile remain unscored. Vulpnix does not currently calculate one
+overall host-wide score or correlate installed packages with CVEs.
+
+## Requirements and data sources
+
+Vulpnix targets Linux and requires Python 3.10 or later. The current development
+environment is Arch Linux; compatibility with other distributions still needs
+validation on real systems.
+
+The tool assesses the local host. Depending on availability and privileges, it
+collects operating-system and kernel facts, local account and privilege metadata,
+service state, selected SSH configuration, filesystem permissions and ownership,
+network sockets and interfaces, firewall ruleset observations, and selected
+kernel-hardening values. It does not require a remote target or a user-provided
+baseline.
+
+Collectors use supported local interfaces and commands where available, including
+`ss`, `ip`, `systemctl`, `sshd`, `nft`, `iptables-save`, and `ip6tables-save`.
+Some checks rely on systemd or other host capabilities. Missing tools, insufficient
+permissions, and unsupported capabilities are reported as limitations rather than
+evidence that a host is secure. Individual checks may require root.
+
+## References
+
+The implementation draws on the host's local interfaces and documentation for the
+relevant Linux utilities and configuration formats:
+
+- Linux account databases: `passwd(5)`, `shadow(5)`, `group(5)`, `gshadow(5)`.
+- Kernel parameters and proc interfaces: `sysctl(8)`, `proc(5)`.
+- Network interfaces and sockets: `ip(8)`, `ss(8)`.
+- SSH server configuration: `sshd_config(5)`.
+- systemd services and unit definitions: `systemctl(1)`, `systemd.unit(5)`.
+- Firewall inspection: `nft(8)`, `iptables-save(8)`, `ip6tables-save(8)`.
+
+Consult the manuals installed on the assessed host for the behavior of its
+specific utility versions. Vulpnix implements a selected set of checks; it is not
+a complete Linux compliance benchmark or firewall-policy verifier.
 
 ## Architecture
 
@@ -139,14 +180,19 @@ or assess data itself.
 
 ## Development and tests
 
-Create a virtual environment if you do not have `pip` in the system Python, then
-install the package from the project root:
+A virtual environment is recommended. From the project root, install the
+package with:
 
 ```bash
 python -m venv .venv
 . .venv/bin/activate
-python -m pip install --no-deps .
+python -m pip install .
 ```
+
+The package declares no Python runtime dependencies. Its build configuration
+requires `setuptools>=68`. Operating-system commands used by individual
+collectors are separate from Python package dependencies. Missing tools or
+unsupported capabilities may cause checks to be reported as unavailable.
 
 Run the automated suite from a source checkout:
 
@@ -162,8 +208,9 @@ release claims are made.
 
 ## Roadmap
 
-See [PLANS.md](PLANS.md). Network socket visibility, selected kernel hardening,
-SSH host-key metadata, and systemd unit metadata are now implemented as an
-initial expansion. Interface inventory, firewall-policy analysis, package/CVE
-correlation, baseline/change detection, risk aggregation, and additional report
-formats remain planned work.
+See [PLANS.md](PLANS.md). Network socket visibility, interface inventory,
+firewall ruleset collection, selected kernel hardening, SSH host-key metadata,
+systemd unit metadata, and qualitative per-finding risk scoring are implemented.
+Effective firewall-policy validation, package/CVE correlation, baseline/change
+detection, host-wide risk aggregation, and additional report formats remain
+planned work.

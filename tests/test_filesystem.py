@@ -198,6 +198,10 @@ class SensitiveFileRuleTests(unittest.TestCase):
             )
         )
         self.assertEqual(len(assessment.findings), 3)
+        self.assertTrue(
+            all(item.status.value == "FAIL" for item in assessment.findings),
+            "Verified insecure filesystem conditions must be FAIL findings",
+        )
         evidence = "\n".join(item.evidence for item in assessment.findings)
         for detail in ("/etc/passwd", "UID: 1000", "GID: 17", "mode: 0664", "/etc/group", "mode: 0666"):
             self.assertIn(detail, evidence)

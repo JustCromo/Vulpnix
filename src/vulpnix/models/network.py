@@ -13,10 +13,23 @@ class ListeningEndpoint:
     process_name: str | None = None
     pid: int | None = None
 
+@dataclass(frozen=True, slots=True)
+class NetworkInterface:
+    name: str
+    state: str
+    flags: tuple[str, ...]
+    addresses: tuple[str, ...]
+
 
 @dataclass(frozen=True, slots=True)
 class NetworkSnapshot:
     endpoints: tuple[ListeningEndpoint, ...]
     source: str
     process_attribution_complete: bool
+    review: tuple[str, ...] = ()
+
+@dataclass(frozen=True, slots=True)
+class NetworkInterfaceSnapshot:
+    interfaces: tuple[NetworkInterface, ...]
+    source: str
     review: tuple[str, ...] = ()

@@ -6,8 +6,15 @@ from pathlib import Path
 import re
 import shutil
 import subprocess
+import json
 
-from vulpnix.models import ListeningEndpoint, NetworkSnapshot
+from vulpnix.models import(
+    ListeningEndpoint,
+    NetworkInterface,
+    NetworkInterfaceSnapshot,
+    NetworkSnapshot,
+
+)
 
 _OWNER_RE = re.compile(r'users:\(\("(?P<name>[^"]+)",pid=(?P<pid>[0-9]+)')
 _SS_PATH = "/usr/sbin:/usr/bin:/sbin:/bin"
@@ -69,6 +76,104 @@ def _parse_ss(output: str) -> tuple[tuple[ListeningEndpoint, ...], int]:
         ))
     endpoints.sort(key=lambda item: (item.protocol, item.port or 0, item.address, item.state))
     return tuple(endpoints), malformed
+
+def _parse_ip_address(
+    output: str,
+) -> tuple[tuple[NetworkInterface, ...], int]:
+    """Parse `ip -j address show` output without inventing missing data."""
+    try:
+        payload = json.loads(output)
+    except (json.JSONDecodeError, TypeError):
+        return (), 1
+
+    if not isinstance(payload, list):
+        return (), 1
+
+    interfaces: list[NetworkInterface] = []
+    malformed = 0
+
+    for entry in payload:
+        if not isinstance(entry, dict):
+            malformed += 1
+            continue
+
+        name = entry.get("ifname")
+        if not isinstance(name, str) or not name.strip():
+            malformed += 1
+            continue
+
+        state = entry.get("operstate")
+        if not isinstance(state, str) or not state.strip():
+            state = "NOT_ASSESSED"
+
+        raw_flags = entry.get("flags", [])
+        if (
+            not isinstance(raw_flags, list)
+            or any(not isinstance(flag, str) for flag in raw_flags)
+        ):
+            malformed += 1
+            flags: tuple[str, ...] = ()
+        else:
+            flags = tuple(raw_flags)
+
+        raw_addresses = entry.get("addr_info", [])
+        if not isinstance(raw_addresses, list):
+            malformed += 1
+            raw_addresses = []
+
+        addresses: set[str] = set()
+
+        for item in raw_addresses:
+            if not isinstance(item, dict):
+                malformed += 1
+                continue
+
+            family = item.get("family")
+            if not isinstance(family, str):
+                malformed += 1
+                continue
+
+            if family not in {"inet", "inet6"}:
+                continue
+
+            local = item.get("local")
+            prefix = item.get("prefixlen")
+
+            if (
+                not isinstance(local, str)
+                or not isinstance(prefix, int)
+                or isinstance(prefix, bool)
+            ):
+                malformed += 1
+                continue
+
+            try:
+                parsed = ipaddress.ip_address(local)
+                max_prefix = parsed.max_prefixlen
+
+                if (
+                    (family == "inet" and parsed.version != 4)
+                    or (family == "inet6" and parsed.version != 6)
+                    or not 0 <= prefix <= max_prefix
+                ):
+                    raise ValueError("invalid address or prefix")
+            except ValueError:
+                malformed += 1
+                continue
+
+            addresses.add(f"{parsed}/{prefix}")
+
+        interfaces.append(
+            NetworkInterface(
+                name=name,
+                state=state.upper(),
+                flags=flags,
+                addresses=tuple(sorted(addresses)),
+            )
+        )
+
+    interfaces.sort(key=lambda item: item.name)
+    return tuple(interfaces), malformed
 
 
 def _decode_proc_address(raw: str, *, ipv6: bool) -> str:
@@ -203,5 +308,72 @@ def collect_network_snapshot(*, privileged: bool | None = None) -> NetworkSnapsh
         endpoints=endpoints,
         source=source,
         process_attribution_complete=process_complete,
+        review=tuple(review),
+    )
+
+def collect_network_interfaces() -> NetworkInterfaceSnapshot:
+    """Collect network interfaces, addresses and operational states."""
+    ip_path = shutil.which("ip", path=_SS_PATH)
+
+    if ip_path is None:
+        return NetworkInterfaceSnapshot(
+            interfaces=(),
+            source="unavailable",
+            review=(
+                "ip command unavailable; interface addresses and "
+                "operational states were not assessed",
+            ),
+        )
+
+    source = "ip -j address show"
+
+    try:
+        result = subprocess.run(
+            [ip_path, "-j", "address", "show"],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=8,
+            shell=False,
+            env={
+                "PATH": _SS_PATH,
+                "LANG": "C",
+                "LC_ALL": "C",
+                "SYSTEMD_COLORS": "0",
+            },
+        )
+    except (OSError, subprocess.TimeoutExpired):
+        return NetworkInterfaceSnapshot(
+            interfaces=(),
+            source=source,
+            review=(
+                "ip command could not complete; interface inventory "
+                "was not assessed",
+            ),
+        )
+
+    if result.returncode != 0:
+        return NetworkInterfaceSnapshot(
+            interfaces=(),
+            source=source,
+            review=(
+                f"ip command failed with exit status {result.returncode}; "
+                "interface inventory was not assessed",
+            ),
+        )
+
+    interfaces, malformed = _parse_ip_address(result.stdout)
+    review = []
+
+    if malformed:
+        review.append(
+            f"{malformed} interface or address record(s) could not be parsed"
+        )
+
+    return NetworkInterfaceSnapshot(
+        interfaces=interfaces,
+        source=source,
         review=tuple(review),
     )

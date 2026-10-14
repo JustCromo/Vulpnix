@@ -2,6 +2,7 @@
 
 import subprocess
 import unittest
+import json
 from unittest.mock import patch
 
 from vulpnix.collectors import network
@@ -67,3 +68,147 @@ class NetworkCollectorTests(unittest.TestCase):
             with patch.object(network, "_collect_procfs", side_effect=OSError("procfs unavailable")):
                 with self.assertRaises(subprocess.CalledProcessError):
                     network.collect_network_snapshot(privileged=True)
+
+class NetworkInterfaceParserTests(unittest.TestCase):
+    def test_parses_interface_state_and_ipv4_ipv6_addresses(self):
+        output = json.dumps([
+            {
+                "ifindex": 2,
+                "ifname": "enp1s0",
+                "flags": ["BROADCAST", "MULTICAST", "UP", "LOWER_UP"],
+                "operstate": "UP",
+                "addr_info": [
+                    {
+                        "family": "inet",
+                        "local": "192.0.2.10",
+                        "prefixlen": 24,
+                    },
+                    {
+                        "family": "inet6",
+                        "local": "2001:db8::10",
+                        "prefixlen": 64,
+                    },
+                ],
+            }
+        ])
+
+        interfaces, malformed = network._parse_ip_address(output)
+
+        self.assertEqual(malformed, 0)
+        self.assertEqual(len(interfaces), 1)
+
+        interface = interfaces[0]
+        self.assertEqual(interface.name, "enp1s0")
+        self.assertEqual(interface.state, "UP")
+        self.assertEqual(
+            interface.flags,
+            ("BROADCAST", "MULTICAST", "UP", "LOWER_UP"),
+        )
+        self.assertEqual(
+            interface.addresses,
+            ("192.0.2.10/24", "2001:db8::10/64"),
+        )
+
+    def test_invalid_json_and_non_list_payload_are_rejected(self):
+        self.assertEqual(network._parse_ip_address("{"), ((), 1))
+        self.assertEqual(
+            network._parse_ip_address('{"ifname":"enp1s0"}'),
+            ((), 1),
+        )
+
+    def test_malformed_family_type_does_not_crash_parser(self):
+        output = json.dumps([
+            {
+                "ifname": "test0",
+                "operstate": "UP",
+                "flags": [],
+                "addr_info": [
+                    {
+                        "family": [],
+                        "local": "192.0.2.1",
+                        "prefixlen": 24,
+                    }
+                ],
+            }
+        ])
+
+        interfaces, malformed = network._parse_ip_address(output)
+
+        self.assertEqual(malformed, 1)
+        self.assertEqual(len(interfaces), 1)
+        self.assertEqual(interfaces[0].addresses, ())
+
+class NetworkInterfaceCollectorTests(unittest.TestCase):
+    def test_collects_interfaces_using_ip_json(self):
+        output = json.dumps([
+            {
+                "ifname": "enp1s0",
+                "flags": ["UP", "LOWER_UP"],
+                "operstate": "UP",
+                "addr_info": [
+                    {
+                        "family": "inet",
+                        "local": "192.0.2.10",
+                        "prefixlen": 24,
+                    }
+                ],
+            }
+        ])
+        completed = subprocess.CompletedProcess(
+            ["ip"], 0, output, ""
+        )
+
+        with (
+            patch.object(
+                network.shutil, "which", return_value="/usr/bin/ip"
+            ),
+            patch.object(
+                network.subprocess, "run", return_value=completed
+            ) as run,
+        ):
+            snapshot = network.collect_network_interfaces()
+
+        self.assertEqual(len(snapshot.interfaces), 1)
+        self.assertEqual(snapshot.interfaces[0].name, "enp1s0")
+        self.assertEqual(
+            snapshot.interfaces[0].addresses,
+            ("192.0.2.10/24",),
+        )
+        self.assertFalse(snapshot.review)
+        self.assertEqual(
+            run.call_args.args[0],
+            ["/usr/bin/ip", "-j", "address", "show"],
+        )
+        self.assertFalse(run.call_args.kwargs["shell"])
+
+    def test_missing_ip_marks_interface_inventory_unassessed(self):
+        with patch.object(network.shutil, "which", return_value=None):
+            snapshot = network.collect_network_interfaces()
+
+        self.assertEqual(snapshot.interfaces, ())
+        self.assertEqual(snapshot.source, "unavailable")
+        self.assertTrue(snapshot.review)
+        self.assertTrue(
+            any("not assessed" in item for item in snapshot.review)
+        )
+
+    def test_failed_ip_command_marks_inventory_unassessed(self):
+        completed = subprocess.CompletedProcess(
+            ["/usr/bin/ip"], 1, "", "permission denied"
+        )
+
+        with (
+            patch.object(
+                network.shutil, "which", return_value="/usr/bin/ip"
+            ),
+            patch.object(
+                network.subprocess, "run", return_value=completed
+            ),
+        ):
+            snapshot = network.collect_network_interfaces()
+
+        self.assertEqual(snapshot.interfaces, ())
+        self.assertTrue(snapshot.review)
+        self.assertTrue(
+            any("not assessed" in item for item in snapshot.review)
+        )

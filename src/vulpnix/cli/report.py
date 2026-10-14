@@ -6,6 +6,7 @@ from vulpnix.cli.terminal import accent, display_width, wrap_text
 from vulpnix.cli.summary import AssessmentCoverage, build_assessment_summary
 from vulpnix.findings import Finding
 from vulpnix.models import SystemInfo
+from vulpnix.risk.engine import RiskAssessment
 from vulpnix.scan.privilege import PrivilegeContext
 
 
@@ -43,6 +44,7 @@ class ScanReport:
     scope: tuple[str, ...]
     host_message: str | None = None
     risk_score: str | None = None
+    risk_assessment: RiskAssessment | None = None
     coverage: AssessmentCoverage = AssessmentCoverage.COMPLETE
     review_items: int = 0
     privilege: PrivilegeContext | None = None
@@ -201,6 +203,138 @@ def _finding_details(findings: tuple[Finding, ...], width: int) -> list[str]:
     return lines
 
 
+
+def _risk_assessment_lines(
+    assessment: RiskAssessment,
+    width: int,
+    *,
+    details: bool,
+) -> list[str]:
+    """Render documented qualitative risk scores without scoring uncertain checks."""
+    width = max(1, width)
+    content_width = max(1, width - 2)
+    lines = [
+        accent(line, bold=True)
+        for line in _wrap("RISK ASSESSMENT", width)
+    ]
+
+    lines.extend(
+        _wrap(
+            (
+                f"Scored findings: {len(assessment.scored)} · "
+                f"Verified but unscored: {len(assessment.unscored_verified)}"
+            ),
+            content_width,
+            indent="  ",
+        )
+    )
+    lines.extend(
+        _wrap(
+            "Scale: Impact 1–5 × qualitative probability 1–5; "
+            "probability is not a statistical measurement.",
+            content_width,
+            indent="  ",
+        )
+    )
+    lines.extend(
+        _wrap(
+            "Bands: LOW 1–4 · MODERATE 5–9 · HIGH 10–16 · CRITICAL 17–25.",
+            content_width,
+            indent="  ",
+        )
+    )
+    lines.extend(
+        _wrap(
+            "Only verified FAIL findings with a complete valid profile are "
+            "scored. PASS, REVIEW, NOT_ASSESSED and ERROR are excluded.",
+            content_width,
+            indent="  ",
+        )
+    )
+
+    if assessment.scored:
+        longest_rule_id = max(len(item.rule_id) for item in assessment.scored)
+        if width >= 56 and longest_rule_id <= width - 34:
+            name_width = max(10, longest_rule_id)
+            lines.append(
+                f"  {'RULE':<{name_width}}  {'IMPACT':>6}  "
+                f"{'PROB.':>5}  {'SCORE':>5}  {'LEVEL':<8}"
+            )
+            for item in assessment.scored:
+                lines.append(
+                    f"  {item.rule_id:<{name_width}}  {item.impact:>6}  "
+                    f"{item.probability:>5}  {item.score:>5}  "
+                    f"{item.level.value:<8}"
+                )
+        else:
+            for item in assessment.scored:
+                lines.extend(
+                    _wrap(item.rule_id, max(1, width - 4), indent="    ")
+                )
+                lines.extend(
+                    _wrap(
+                        f"Impact: {item.impact} · Probability: {item.probability} "
+                        f"· Score: {item.score} · Level: {item.level.value}",
+                        max(1, width - 4),
+                        indent="    ",
+                    )
+                )
+
+        if details:
+            lines.extend(
+                (
+                    "",
+                    *[
+                        accent(line, bold=True)
+                        for line in _wrap("RISK RATIONALE", width)
+                    ],
+                )
+            )
+            for item in assessment.scored:
+                lines.extend(
+                    _wrap(
+                        f"{item.rule_id} · Score: {item.impact} × "
+                        f"{item.probability} = {item.score} · {item.level.value}",
+                        content_width,
+                        indent="  ",
+                    )
+                )
+                lines.extend(
+                    _wrap(
+                        f"Rationale: {item.rationale}",
+                        max(1, width - 4),
+                        indent="    ",
+                    )
+                )
+    else:
+        lines.extend(
+            _wrap(
+                "No verified FAIL findings with an eligible risk profile were scored.",
+                content_width,
+                indent="  ",
+            )
+        )
+
+    if assessment.unscored_verified:
+        lines.extend(
+            _wrap(
+                "Verified FAIL findings not scored (no complete valid documented profile):",
+                content_width,
+                indent="  ",
+            )
+        )
+        for finding in assessment.unscored_verified:
+            lines.extend(
+                _wrap(
+                    finding.rule_id,
+                    max(1, width - 4),
+                    indent="    ",
+                )
+            )
+
+    return lines
+
+
 def render_scan_report(report: ScanReport, width: int) -> list[str]:
     """Render a scan report, adapting cards and wrapped text to terminal width."""
     width = max(1, width)
@@ -231,6 +365,16 @@ def render_scan_report(report: ScanReport, width: int) -> list[str]:
         lines.extend(render_report_section(ReportSection("SYSTEM", facts=system_facts), width))
     for section in report.sections:
         lines.extend(render_report_section(section, width))
+
+    if report.risk_assessment is not None:
+        lines.extend(
+            (
+                "",
+                *_risk_assessment_lines(
+                    report.risk_assessment, width, details=report.details
+                ),
+            )
+        )
 
     if report.details:
         lines.extend(("", *_finding_details(report.findings, width), ""))

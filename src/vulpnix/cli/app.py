@@ -22,6 +22,8 @@ from vulpnix.collectors import (
     collect_system_info,
     collect_sysctl_observations,
     collect_network_snapshot,
+    collect_network_interfaces,
+    collect_firewall_snapshot,
     collect_ssh_host_key_metadata,
     collect_service_unit_file_metadata,
 )
@@ -37,6 +39,9 @@ from vulpnix.models import (
     SystemInfo,
     User,
     HardeningAssessment,
+    FirewallObservation,
+    FirewallSnapshot,
+    NetworkInterfaceSnapshot,
     NetworkSnapshot,
     SSHHostKeyAssessment,
     UnitFileAssessment,
@@ -80,6 +85,7 @@ from vulpnix.rules import (
 )
 
 from vulpnix.scan.orchestrator import ScanOrchestrator
+from vulpnix.risk import assess_findings
 from vulpnix.scan.privilege import current_privilege_context
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.rules.hardening import assess_kernel_hardening
@@ -219,6 +225,7 @@ def _render_result(result, *, details: bool = True) -> None:
         sections=result.sections,
         findings=result.findings,
         scope=result.scope,
+        risk_assessment=assess_findings(result.findings),
         coverage=result.coverage,
         review_items=result.review_items,
         privilege=result.privilege,
@@ -300,7 +307,7 @@ def _hardening_report_section(assessment: HardeningAssessment, *, details: bool 
         title="KERNEL HARDENING",
         facts=(
             ("Parameters checked", str(len(checks))),
-            ("Expected values", str(passed)),
+            ("Checks passing", str(passed)),
             ("Verified concerns", str(failed)),
             ("Context review", str(review)),
             ("Unavailable/error", str(unavailable)),
@@ -354,6 +361,123 @@ def _network_report_section(snapshot: NetworkSnapshot, *, details: bool = False)
         items=items,
         items_label="Local socket inventory (bind scope is not proof of internet reachability):",
         footer="An open/listening port is an observation, not automatically a vulnerability.",
+    )
+
+
+
+def _network_interface_report_section(
+    snapshot: NetworkInterfaceSnapshot, *, details: bool = False
+) -> ReportSection:
+    interfaces = snapshot.interfaces
+    up_count = sum(item.state == "UP" for item in interfaces)
+    down_count = sum(item.state == "DOWN" for item in interfaces)
+    addressed = sum(bool(item.addresses) for item in interfaces)
+    address_count = sum(len(item.addresses) for item in interfaces)
+    limit = 60 if details else 8
+
+    items = tuple(
+        f"{item.name} · state {item.state} · "
+        f"flags: {', '.join(item.flags) if item.flags else 'unavailable'} · "
+        f"addresses: {', '.join(item.addresses) if item.addresses else 'none reported'}"
+        for item in interfaces[:limit]
+    )
+
+    if not items:
+        if snapshot.source == "unavailable":
+            items = ("Interface inventory was not assessed; absence cannot be inferred.",)
+        elif snapshot.review:
+            items = ("No usable interface records; consult the review messages.",)
+        else:
+            items = ("No interface records were reported.",)
+    elif len(interfaces) > limit:
+        items += (
+            f"{len(interfaces) - limit} additional interface(s) omitted; "
+            "use --details to list more.",
+        )
+
+    if snapshot.review:
+        items += tuple(f"REVIEW: {message}" for message in snapshot.review[:6])
+        if len(snapshot.review) > 6:
+            items += (
+                f"{len(snapshot.review) - 6} additional review message(s) omitted.",
+            )
+
+    return ReportSection(
+        title="NETWORK INTERFACES",
+        facts=(
+            ("Inventory source", snapshot.source),
+            ("Interfaces", str(len(interfaces))),
+            ("State UP", str(up_count)),
+            ("State DOWN", str(down_count)),
+            ("Interfaces with IP addresses", str(addressed)),
+            ("IP addresses", str(address_count)),
+        ),
+        items=items,
+        items_label="Local interface inventory:",
+        footer="Assigned addresses and interface state do not prove internet reachability.",
+    )
+
+
+
+def _firewall_report_section(
+    snapshot: FirewallSnapshot, *, details: bool = False
+) -> ReportSection:
+    observations = snapshot.observations
+    configured = sum(item.state == "CONFIGURED" for item in observations)
+    empty = sum(item.state == "EMPTY" for item in observations)
+    not_assessed = sum(item.state == "NOT_ASSESSED" for item in observations)
+    errors = sum(item.state == "ERROR" for item in observations)
+
+    items = []
+    represented_review = set()
+
+    for observation in observations:
+        items.append(
+            f"{observation.implementation} · {observation.state} · "
+            f"{observation.summary}"
+        )
+        if details:
+            items.append(f"{observation.implementation} source: {observation.source}")
+            items.extend(
+                f"{observation.implementation} detail: {detail}"
+                for detail in observation.details
+            )
+        for message in observation.review:
+            represented_review.add(message)
+            items.append(f"REVIEW ({observation.implementation}): {message}")
+
+    for message in snapshot.review:
+        if message not in represented_review:
+            items.append(f"REVIEW: {message}")
+
+    if not items:
+        items.append(
+            "Firewall state is NOT_ASSESSED; no inspection result was available."
+        )
+
+    limit = 30 if details else 8
+    if len(items) > limit:
+        omitted = len(items) - limit
+        items = items[:limit]
+        items.append(
+            f"{omitted} additional firewall detail(s) omitted; use --details to list more."
+        )
+
+    return ReportSection(
+        title="FIREWALL CONFIGURATION",
+        facts=(
+            ("Implementations observed", str(len(observations))),
+            ("Reported configured", str(configured)),
+            ("Reported empty", str(empty)),
+            ("Not assessed", str(not_assessed)),
+            ("Errors", str(errors)),
+        ),
+        items=tuple(items),
+        items_label="Read-only firewall observations:",
+        footer=(
+            "Configured rules do not prove effective protection; an empty "
+            "frontend does not prove that no other firewall backend applies."
+        ),
     )
 
 
@@ -428,16 +552,116 @@ def _run_hardening_result(*, details: bool = False):
 
 
 def _run_network_result(*, details: bool = False):
+    orchestrator = _make_orchestrator()
+
     try:
-        return _make_orchestrator().run_network(
+        socket_result = orchestrator.run_network(
             collector=collect_network_snapshot,
-            section_builder=lambda snapshot: _network_report_section(snapshot, details=details),
+            section_builder=lambda snapshot: _network_report_section(
+                snapshot, details=details
+            ),
         )
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        return _make_orchestrator()._result(
-            sections=(ReportSection("NETWORK EXPOSURE", status="NOT_ASSESSED", message=f"Socket inventory is unavailable: {_display_value(str(error))}"),),
-            scope=("listening sockets",), coverage=AssessmentCoverage.PARTIAL, review_items=1,
+        socket_result = orchestrator._result(
+            sections=(
+                ReportSection(
+                    "NETWORK EXPOSURE",
+                    status="NOT_ASSESSED",
+                    message=f"Socket inventory is unavailable: {_display_value(str(error))}",
+                ),
+            ),
+            scope=("listening sockets", "local bind scope"),
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=1,
         )
+
+    try:
+        interface_snapshot = collect_network_interfaces()
+        interface_section = _network_interface_report_section(
+            interface_snapshot, details=details
+        )
+        interface_result = orchestrator._result(
+            sections=(interface_section,),
+            scope=(
+                "network interfaces",
+                "interface IP addresses",
+                "interface operational state",
+            ),
+            coverage=(
+                AssessmentCoverage.PARTIAL
+                if interface_snapshot.review
+                else AssessmentCoverage.COMPLETE
+            ),
+            review_items=len(interface_snapshot.review),
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        interface_result = orchestrator._result(
+            sections=(
+                ReportSection(
+                    "NETWORK INTERFACES",
+                    status="NOT_ASSESSED",
+                    message=f"Interface inventory is unavailable: {_display_value(str(error))}",
+                ),
+            ),
+            scope=(
+                "network interfaces",
+                "interface IP addresses",
+                "interface operational state",
+            ),
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=1,
+        )
+
+    try:
+        firewall_snapshot = collect_firewall_snapshot()
+        firewall_section = _firewall_report_section(
+            firewall_snapshot, details=details
+        )
+        firewall_incomplete = (
+            bool(firewall_snapshot.review)
+            or not firewall_snapshot.observations
+            or any(
+                item.state in {"NOT_ASSESSED", "ERROR"}
+                for item in firewall_snapshot.observations
+            )
+        )
+        firewall_review_count = max(
+            len(firewall_snapshot.review),
+            1 if firewall_incomplete else 0,
+        )
+        firewall_result = orchestrator._result(
+            sections=(firewall_section,),
+            scope=(
+                "firewall configuration",
+                "IPv4 firewall rules",
+                "IPv6 firewall rules",
+            ),
+            coverage=(
+                AssessmentCoverage.PARTIAL
+                if firewall_incomplete
+                else AssessmentCoverage.COMPLETE
+            ),
+            review_items=firewall_review_count,
+        )
+    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
+        firewall_result = orchestrator._result(
+            sections=(
+                ReportSection(
+                    "FIREWALL CONFIGURATION",
+                    status="NOT_ASSESSED",
+                    message=f"Firewall configuration is unavailable: {_display_value(str(error))}",
+                ),
+            ),
+            scope=(
+                "firewall configuration",
+                "IPv4 firewall rules",
+                "IPv6 firewall rules",
+            ),
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=1,
+        )
+
+    return _combine_results(socket_result, interface_result, firewall_result)
 
 
 def _run_ssh_host_key_result(*, details: bool = False):

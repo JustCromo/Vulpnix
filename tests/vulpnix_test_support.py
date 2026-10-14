@@ -51,6 +51,31 @@ def patch_supplementary_collectors(app_module):
     with ExitStack() as stack:
         stack.enter_context(patch.object(app_module, "collect_sysctl_observations", lambda: safe_sysctl_observations()))
         stack.enter_context(patch.object(app_module, "collect_network_snapshot", lambda: empty_network_snapshot()))
+        stack.enter_context(
+            patch.object(
+                app_module,
+                "collect_firewall_snapshot",
+                lambda: app_module.FirewallSnapshot(
+                    (
+                        app_module.FirewallObservation(
+                            "nftables",
+                            "EMPTY",
+                            "test fixture",
+                            "Fixture observation",
+                            ("tables=0", "chains=0", "rules=0", "families=ip"),
+                        ),
+                    ),
+                    (),
+                ),
+            )
+        )
+        stack.enter_context(
+            patch.object(
+                app_module,
+                "collect_network_interfaces",
+                lambda: app_module.NetworkInterfaceSnapshot((), "test fixture"),
+            )
+        )
         stack.enter_context(patch.object(app_module, "collect_ssh_host_key_metadata", lambda: safe_ssh_host_keys()))
         stack.enter_context(patch.object(app_module, "collect_service_unit_file_metadata", lambda services: ((), ("fixture has no unit-file metadata",))))
         stack.enter_context(patch.object(app_module, "collect_setid_files", lambda: empty_filesystem_coverage()))

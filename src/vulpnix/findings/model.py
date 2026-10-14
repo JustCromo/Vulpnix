@@ -25,3 +25,6 @@ class Finding:
     recommendation: str
     status: FindingStatus = FindingStatus.REVIEW
     severity: str | None = None
+    impact: int | None = None
+    probability: int | None = None
+    risk_rationale: str | None = None

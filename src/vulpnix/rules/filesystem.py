@@ -118,6 +118,7 @@ def assess_sensitive_files(
                         "Verify the intended ownership and restore root ownership if the "
                         "current owner is not explicitly required."
                     ),
+                    status=FindingStatus.FAIL,
                 )
             )
         if metadata.mode & 0o022:
@@ -134,6 +135,7 @@ def assess_sensitive_files(
                         "Review the owning group and remove group/other write access "
                         "unless it is explicitly required and controlled."
                     ),
+                    status=FindingStatus.FAIL,
                 )
             )
         if metadata.path in _SENSITIVE_SECRET_FILES and metadata.mode & 0o004:
@@ -150,6 +152,7 @@ def assess_sensitive_files(
                         "Remove world-read access and retain only the access required "
                         "by the host's account-management configuration."
                     ),
+                    status=FindingStatus.FAIL,
                 )
             )
         elif metadata.path in _SENSITIVE_SECRET_FILES and metadata.mode & 0o040:

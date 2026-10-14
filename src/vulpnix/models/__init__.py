@@ -11,11 +11,17 @@ from vulpnix.models.filesystem_scan import (
     FilesystemCoverage,
     SetIdFile,
 )
+from vulpnix.models.network import (
+    ListeningEndpoint,
+    NetworkInterface,
+    NetworkInterfaceSnapshot,
+    NetworkSnapshot,
+)
+from vulpnix.models.firewall import FirewallObservation, FirewallSnapshot
 from vulpnix.models.service import Service
 from vulpnix.models.ssh import SSHConfig, SSHConnectionContext
 from vulpnix.models.sudo import SudoGrant, SudoPrivilege, SudoPrivilegeStatus
 from vulpnix.models.user import User
-from vulpnix.models.network import ListeningEndpoint, NetworkSnapshot
 from vulpnix.models.hardening import SysctlObservation, HardeningCheck, HardeningAssessment
 from vulpnix.models.ssh_keys import SSHHostKeyObservation, SSHHostKeyCheck, SSHHostKeyAssessment
 from vulpnix.models.systemd_security import UnitFileObservation, UnitFileCheck, UnitFileAssessment
@@ -37,6 +43,8 @@ __all__ = [
     "User",
     "ListeningEndpoint",
     "NetworkSnapshot",
+    "FirewallObservation",
+    "FirewallSnapshot",
     "SysctlObservation",
     "HardeningCheck",
     "HardeningAssessment",
@@ -46,4 +54,6 @@ __all__ = [
     "UnitFileObservation",
     "UnitFileCheck",
     "UnitFileAssessment",
+    "NetworkInterface",
+    "NetworkInterfaceSnapshot",
 ]
