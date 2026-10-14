@@ -174,3 +174,176 @@ class FirewallCollectorTests(unittest.TestCase):
         self.assertTrue(snapshot.observations)
         self.assertEqual(snapshot.observations[0].state, "NOT_ASSESSED")
         self.assertTrue(snapshot.review)
+
+
+class FirewallRuleMetadataTests(unittest.TestCase):
+    def test_iptables_preserves_rule_order_and_conditionality(self):
+        output = """*filter
+:INPUT ACCEPT [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+-A INPUT -m conntrack --ctstate ESTABLISHED,RELATED -j ACCEPT
+-A INPUT -i lo -j ACCEPT
+-A INPUT -m comment --comment "default inbound deny" -j DROP
+COMMIT
+"""
+        observation = firewall._parse_iptables_save(
+            output, implementation="iptables"
+        )
+        input_chain = next(
+            chain for chain in observation.chains if chain.name == "INPUT"
+        )
+
+        self.assertEqual(input_chain.chain_type, "filter")
+        self.assertEqual(input_chain.hook, "input")
+        self.assertEqual(input_chain.policy, "ACCEPT")
+        self.assertEqual(
+            [rule.position for rule in input_chain.rules],
+            [1, 2, 3],
+        )
+        self.assertEqual(
+            [rule.target for rule in input_chain.rules],
+            ["ACCEPT", "ACCEPT", "DROP"],
+        )
+        self.assertEqual(
+            [rule.unconditional for rule in input_chain.rules],
+            [False, False, True],
+        )
+
+    def test_iptables_detects_a_truly_unconditional_drop(self):
+        output = """*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -j DROP
+COMMIT
+"""
+        observation = firewall._parse_iptables_save(
+            output, implementation="iptables"
+        )
+        input_chain = next(
+            chain for chain in observation.chains if chain.name == "INPUT"
+        )
+
+        self.assertEqual(len(input_chain.rules), 1)
+        self.assertEqual(input_chain.rules[0].target, "DROP")
+        self.assertTrue(input_chain.rules[0].unconditional)
+
+    def test_nft_preserves_filter_chain_type_and_ordered_actions(self):
+        payload = {
+            "nftables": [
+                {"table": {"family": "inet", "name": "filter"}},
+                {
+                    "chain": {
+                        "family": "inet",
+                        "table": "filter",
+                        "name": "input",
+                        "type": "filter",
+                        "hook": "input",
+                        "prio": 0,
+                        "policy": "accept",
+                    }
+                },
+                {
+                    "rule": {
+                        "family": "inet",
+                        "table": "filter",
+                        "chain": "input",
+                        "expr": [
+                            {"match": {"op": "==", "left": {"meta": {"key": "iifname"}}, "right": "lo"}},
+                            {"accept": None},
+                        ],
+                    }
+                },
+                {
+                    "rule": {
+                        "family": "inet",
+                        "table": "filter",
+                        "chain": "input",
+                        "expr": [{"counter": None}, {"drop": None}],
+                    }
+                },
+            ]
+        }
+        observation = firewall._parse_nft_json(json.dumps(payload))
+        input_chain = next(
+            chain for chain in observation.chains if chain.name == "input"
+        )
+
+        self.assertEqual(input_chain.chain_type, "filter")
+        self.assertEqual(input_chain.hook, "input")
+        self.assertEqual(input_chain.policy, "ACCEPT")
+        self.assertEqual(
+            [rule.target for rule in input_chain.rules],
+            ["ACCEPT", "DROP"],
+        )
+        self.assertFalse(input_chain.rules[0].unconditional)
+        self.assertEqual(input_chain.rules[0].conditions, ("meta iifname == 'lo'",))
+        self.assertEqual(
+            input_chain.rules[0].conditions,
+            ("meta iifname == 'lo'",),
+        )
+        self.assertTrue(input_chain.rules[1].unconditional)
+
+class NftConditionRenderingTests(unittest.TestCase):
+    def test_renders_payload_fields_and_connection_state_sets(self):
+        expressions = [
+            {
+                "match": {
+                    "op": "==",
+                    "left": {"payload": {"protocol": "ip", "field": "daddr"}},
+                    "right": "192.168.122.0/24",
+                }
+            },
+            {
+                "match": {
+                    "op": "in",
+                    "left": {"ct": {"key": "state"}},
+                    "right": {"set": ["established", "related"]},
+                }
+            },
+        ]
+
+        conditions = firewall._nft_match_conditions(expressions)
+
+        self.assertEqual(
+            conditions,
+            (
+                "payload ip daddr == '192.168.122.0/24'",
+                "ct state in {'established', 'related'}",
+            ),
+        )
+
+    def test_unknown_operand_is_not_rendered_as_a_fake_comparison(self):
+        conditions = firewall._nft_match_conditions([
+            {
+                "match": {
+                    "op": "==",
+                    "left": {"unknown_operand": {"value": 1}},
+                    "right": {"another_unknown": {"value": 2}},
+                }
+            }
+        ])
+
+        self.assertEqual(
+            conditions,
+            ("nft match condition could not be rendered (operator '==')",),
+        )
+class NftPrefixOperandTests(unittest.TestCase):
+    def test_ipv4_prefix_is_rendered(self):
+        from vulpnix.collectors.firewall import _nft_operand_text
+
+        self.assertEqual(
+            _nft_operand_text({
+                "prefix": {"addr": "192.168.122.0", "len": 24}
+            }),
+            "192.168.122.0/24",
+        )
+
+    def test_invalid_prefix_is_not_rendered(self):
+        from vulpnix.collectors.firewall import _nft_operand_text
+
+        self.assertIsNone(
+            _nft_operand_text({
+                "prefix": {"addr": "192.168.122.0", "len": 33}
+            })
+        )
+

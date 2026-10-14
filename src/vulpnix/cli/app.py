@@ -89,6 +89,7 @@ from vulpnix.risk import assess_findings
 from vulpnix.scan.privilege import current_privilege_context
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.rules.hardening import assess_kernel_hardening
+from vulpnix.rules.firewall import assess_firewall_policy
 from vulpnix.scan.progress import ScanProgress, ScanStage
 
 
@@ -481,6 +482,58 @@ def _firewall_report_section(
     )
 
 
+
+def _firewall_policy_report_section(
+    assessment, *, details: bool = False
+) -> ReportSection:
+    """Render firewall observations and review findings separately."""
+    observations = tuple(
+        check for check in assessment.checks
+        if check.startswith("POLICY OBSERVED · ")
+    )
+    reviews = tuple(
+        check for check in assessment.checks
+        if check.startswith("REVIEW · ")
+    )
+    limit = 30 if details else 8
+
+    items = []
+    for label, group in (
+        ("POLICY OBSERVATION", observations),
+        ("REVIEW FINDING", reviews),
+    ):
+        for check in group[:limit]:
+            _, _, description = check.partition(" · ")
+            items.append(f"{label} · {description}")
+
+        omitted = len(group) - limit
+        if omitted > 0:
+            items.append(
+                f"{omitted} additional {label.lower()}(s) omitted; "
+                "use --details to list them."
+            )
+
+    if not items:
+        items.append(
+            "No firewall policy observations or review findings were produced."
+        )
+
+    return ReportSection(
+        title="FIREWALL POLICY ANALYSIS",
+        facts=(
+            ("Policy observations", str(len(observations))),
+            ("Review findings", str(len(assessment.findings))),
+        ),
+        items=tuple(items),
+        items_label="Assessment results:",
+        footer=(
+            "Preliminary chain analysis only. It does not prove internet "
+            "reachability or fully resolve interactions between chains, "
+            "hooks, and firewall backends."
+        ),
+    )
+
+
 def _ssh_host_key_report_section(assessment: SSHHostKeyAssessment, *, details: bool = False) -> ReportSection:
     checks = assessment.checks
     passed = sum(item.status is FindingStatus.PASS for item in checks)
@@ -614,8 +667,12 @@ def _run_network_result(*, details: bool = False):
 
     try:
         firewall_snapshot = collect_firewall_snapshot()
+        firewall_assessment = assess_firewall_policy(firewall_snapshot)
         firewall_section = _firewall_report_section(
             firewall_snapshot, details=details
+        )
+        firewall_policy_section = _firewall_policy_report_section(
+            firewall_assessment, details=details
         )
         firewall_incomplete = (
             bool(firewall_snapshot.review)
@@ -630,18 +687,20 @@ def _run_network_result(*, details: bool = False):
             1 if firewall_incomplete else 0,
         )
         firewall_result = orchestrator._result(
-            sections=(firewall_section,),
+            sections=(firewall_section, firewall_policy_section),
+            findings=firewall_assessment.findings,
             scope=(
                 "firewall configuration",
                 "IPv4 firewall rules",
                 "IPv6 firewall rules",
+                "firewall input policy analysis",
             ),
-            coverage=(
-                AssessmentCoverage.PARTIAL
-                if firewall_incomplete
-                else AssessmentCoverage.COMPLETE
+            # Policy evaluation is intentionally partial until chain jumps,
+            # all hooks, and active backend interactions are fully resolved.
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=(
+                firewall_review_count + firewall_assessment.review_items
             ),
-            review_items=firewall_review_count,
         )
     except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
         firewall_result = orchestrator._result(
@@ -651,11 +710,17 @@ def _run_network_result(*, details: bool = False):
                     status="NOT_ASSESSED",
                     message=f"Firewall configuration is unavailable: {_display_value(str(error))}",
                 ),
+                ReportSection(
+                    "FIREWALL POLICY ANALYSIS",
+                    status="NOT_ASSESSED",
+                    message="Policy analysis could not run because firewall collection failed.",
+                ),
             ),
             scope=(
                 "firewall configuration",
                 "IPv4 firewall rules",
                 "IPv6 firewall rules",
+                "firewall input policy analysis",
             ),
             coverage=AssessmentCoverage.PARTIAL,
             review_items=1,

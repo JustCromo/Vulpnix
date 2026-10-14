@@ -17,7 +17,7 @@ from vulpnix.models.network import (
     NetworkInterfaceSnapshot,
     NetworkSnapshot,
 )
-from vulpnix.models.firewall import FirewallObservation, FirewallSnapshot
+from vulpnix.models.firewall import FirewallChain, FirewallObservation, FirewallRule, FirewallSnapshot
 from vulpnix.models.service import Service
 from vulpnix.models.ssh import SSHConfig, SSHConnectionContext
 from vulpnix.models.sudo import SudoGrant, SudoPrivilege, SudoPrivilegeStatus
@@ -43,6 +43,8 @@ __all__ = [
     "User",
     "ListeningEndpoint",
     "NetworkSnapshot",
+    "FirewallChain",
+    "FirewallRule",
     "FirewallObservation",
     "FirewallSnapshot",
     "SysctlObservation",

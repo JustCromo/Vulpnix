@@ -89,6 +89,17 @@ class ExtendedScanCommandTests(unittest.TestCase):
         self.assertIn("NETWORK EXPOSURE", compact.getvalue())
         self.assertIn("NETWORK INTERFACES", compact.getvalue())
         self.assertIn("FIREWALL CONFIGURATION", compact.getvalue())
+        self.assertIn("FIREWALL POLICY ANALYSIS", compact.getvalue())
+        self.assertIn("Assessment results:", compact.getvalue())
+        self.assertNotIn("Input-policy observations:", compact.getvalue())
+        self.assertIn(
+            "Inbound firewall policy could not be assessed",
+            compact.getvalue(),
+        )
+        self.assertIn(
+            "FIREWALL-INPUT-UNASSESSED-001",
+            detailed.getvalue(),
+        )
         self.assertIn("test0", compact.getvalue())
         self.assertIn("additional socket(s) omitted", compact.getvalue())
         self.assertNotIn("demo10", compact.getvalue())

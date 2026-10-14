@@ -11,6 +11,7 @@ class FirewallRule:
     target: str | None
     unconditional: bool
     target_chain: str | None = None
+    conditions: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -24,6 +25,7 @@ class FirewallChain:
     hook: str | None
     policy: str | None
     rules: tuple[FirewallRule, ...] = ()
+    chain_type: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
