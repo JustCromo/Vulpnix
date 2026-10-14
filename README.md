@@ -11,63 +11,63 @@ validation on real Linux systems before it can be claimed.
 
 ## Installation
 
-Vulpnix can be installed as a system-wide command from the public GitHub
-repository using [pipx](https://pipx.pypa.io/stable/). This keeps the
-application in an isolated Python environment and exposes its command to all
-users without requiring them to clone the repository.
+Vulpnix can be installed as a system-wide command with
+[pipx](https://pipx.pypa.io/stable/). This works on Linux distributions,
+including Linux distributions running under WSL. Choose the commands matching
+the distribution installed on your machine.
 
-### Requirements
+### 1. Install pipx and Git
 
-- Linux
-- Python 3.10 or newer
-- Git
-- pipx
-
-Install pipx using your distribution's package manager. On Arch Linux:
+Arch Linux:
 
 ```bash
-sudo pacman -S python-pipx
+sudo pacman -S python-pipx git
 ```
 
-On other distributions, follow the official
-[pipx installation instructions](https://pipx.pypa.io/stable/how-to/install-pipx.html).
+Debian or recent Ubuntu releases:
 
-### Install Vulpnix
+```bash
+sudo apt update
+sudo apt install pipx git
+```
 
-Install Vulpnix globally from the public repository:
+Fedora:
+
+```bash
+sudo dnf install pipx git
+```
+
+For other distributions, older releases, or alternative installation methods,
+follow the [official pipx installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html).
+
+Ensure pipx is available in your terminal. If the installed version supports
+global installations, prepare the global command path with:
+
+```bash
+pipx ensurepath
+sudo pipx ensurepath --global
+```
+
+Open a new terminal if your PATH was changed. The global installation below
+requires a pipx version that supports the `--global` option.
+
+### 2. Install Vulpnix
+
+Install the latest version from the public GitHub repository:
 
 ```bash
 sudo pipx install --global git+https://github.com/JustCromo/Vulpnix.git
 ```
 
-With pipx's default global paths, the application environment is stored under
-`/opt/pipx` and the executable is exposed as `/usr/local/bin/vulpnix`.
-Administrative privileges are required for the global installation.
+### 3. Update Vulpnix
 
-### Run Vulpnix
-
-Start the interactive shell as the current user:
-
-```bash
-vulpnix
-```
-
-To run the assessment shell with elevated privileges:
-
-```bash
-sudo vulpnix
-```
-
-### Update Vulpnix
-
-After a new commit has been pushed to the default GitHub branch, update the
-global installation with:
+After changes have been pushed to the repository, update the installation:
 
 ```bash
 sudo pipx upgrade --global vulpnix
 ```
 
-### Uninstall Vulpnix
+### 4. Uninstall Vulpnix
 
 Remove the global installation with:
 
@@ -75,7 +75,7 @@ Remove the global installation with:
 sudo pipx uninstall --global vulpnix
 ```
 
-These commands assume pipx's default global paths. Custom pipx configurations
+These commands use pipx's default global paths. Custom pipx configurations
 may use different locations.
 
 ## Run with or without root
