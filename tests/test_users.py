@@ -187,6 +187,39 @@ class UsersCLItests(unittest.TestCase):
         self.assertIn("alice · UID 1000", rendered)
         self.assertIn("bob · UID 1001", rendered)
 
+    def test_user_inventory_uses_verified_sudo_privilege_status(self) -> None:
+        output = io.StringIO()
+        users = tuple(
+            user for user in parse_local_users(PASSWD, GROUP)
+            if user.username in {"root", "alice", "bob"}
+        )
+        sudo_results = (
+            SudoPrivilege(
+                "alice",
+                SudoPrivilegeStatus.PRIVILEGES_FOUND,
+                grants=(SudoGrant(("ALL",), None, ("ALL",), ()),),
+            ),
+            SudoPrivilege(
+                "bob",
+                SudoPrivilegeStatus.NO_PRIVILEGES,
+                reason="sudo explicitly reported no allowed commands",
+            ),
+        )
+
+        with (
+            patch.object(app, "collect_local_users", return_value=users),
+            patch.object(app, "collect_sudo_privileges", return_value=sudo_results),
+            patch.object(app, "terminal_size", return_value=(160, 30)),
+            contextlib.redirect_stdout(output),
+        ):
+            app._dispatch_command("scan users --details")
+
+        normalized = " ".join(output.getvalue().split())
+        self.assertIn("alice · UID 1000", normalized)
+        self.assertIn("alice · UID 1000 · GID 1000 · groups: users, operators · shell: /bin/bash · privileged: yes", normalized)
+        self.assertIn("bob · UID 1001 · GID 1001 · groups: Unavailable · shell: Unavailable · privileged: no", normalized)
+
+
     def test_additional_uid_zero_accounts_are_reviewed_not_marked_as_findings(self) -> None:
         output = io.StringIO()
         with (

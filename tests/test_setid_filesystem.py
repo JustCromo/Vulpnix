@@ -303,6 +303,36 @@ class SetIdCliTests(unittest.TestCase):
         self.assertIn("Set-ID regular files: 11", rendered)
         self.assertNotIn("ordinary-suid", rendered)
 
+    def test_filesystem_details_lists_benign_setid_inventory(self) -> None:
+        item = SetIdFile(
+            FileMetadata(
+                "/usr/bin/ordinary-suid", 0, 0, 0o4755, 4096, "regular file"
+            ),
+            True,
+            ("rw",),
+        )
+        coverage = FilesystemCoverage(
+            (item,), CoverageStatus.COLLECTED, ("/usr",), 40, 0.02
+        )
+        output = io.StringIO()
+
+        with (
+            patch.object(app, "collect_sensitive_file_metadata", return_value=()),
+            patch.object(app, "collect_setid_files", return_value=coverage),
+            patch.object(app, "terminal_size", return_value=(120, 40)),
+            contextlib.redirect_stdout(output),
+        ):
+            app._dispatch_command("scan filesystem --details")
+
+        rendered = " ".join(output.getvalue().split())
+        self.assertIn("/usr/bin/ordinary-suid", rendered)
+        self.assertIn("mode 4755", rendered)
+        self.assertIn("ELF: yes", rendered)
+        self.assertIn("mount options: rw", rendered)
+        self.assertIn("Set-ID verified findings: 0", rendered)
+        self.assertNotIn("FS-SETID-WORLD-WRITE-001", rendered)
+
+
     def test_full_scan_includes_setid_finding_in_central_report(self) -> None:
         item = SetIdFile(
             FileMetadata("/usr/local/bin/writable", 0, 0, 0o4713, 99, "regular file"),

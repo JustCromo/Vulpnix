@@ -299,6 +299,33 @@ class FilesystemCLITests(unittest.TestCase):
         self.assertNotIn("[FAIL]", rendered)
         self.assertNotIn("ignored contents", rendered)
 
+    def test_scan_filesystem_details_lists_sensitive_files_when_all_pass(self) -> None:
+        output = io.StringIO()
+        records = (
+            result("/etc/passwd", 0o644),
+            result("/etc/shadow", 0o600),
+            result("/etc/group", 0o644),
+            result("/etc/gshadow", 0o600),
+        )
+
+        with (
+            patch.object(app, "collect_sensitive_file_metadata", return_value=records),
+            patch.object(app, "collect_setid_files", return_value=empty_coverage()),
+            patch.object(app, "terminal_size", return_value=(120, 40)),
+            contextlib.redirect_stdout(output),
+        ):
+            app._dispatch_command("scan filesystem --details")
+
+        rendered = output.getvalue()
+        for file_path in ("/etc/passwd", "/etc/shadow", "/etc/group", "/etc/gshadow"):
+            with self.subTest(path=file_path):
+                self.assertIn(file_path, rendered)
+
+        self.assertIn("0644", rendered)
+        self.assertIn("0600", rendered)
+        self.assertIn("No defined insecure condition detected", rendered)
+
+
     def test_help_and_completion_include_filesystem_scan(self) -> None:
         output = io.StringIO()
         with contextlib.redirect_stdout(output):

@@ -626,6 +626,19 @@ def _user_report_section(
     if not review:
         review.append("No unresolved account information")
 
+    def privilege_label(user: User) -> str:
+        if user.uid == 0 or user.username in privileged_users:
+            return "yes"
+
+        sudo_result = sudo_by_account.get(user.username)
+        if user.privileged is False or (
+            sudo_result is not None
+            and sudo_result.status is SudoPrivilegeStatus.NO_PRIVILEGES
+        ):
+            return "no"
+
+        return "NOT_ASSESSED"
+
     inventory = tuple(
         " · ".join(
             (
@@ -634,7 +647,7 @@ def _user_report_section(
                 f"GID {user.gid}",
                 "groups: " + (", ".join(user.groups) if user.groups is not None else "Unavailable"),
                 "shell: " + (user.shell or "Unavailable"),
-                "privileged: " + ("yes" if user.privileged is True else "NOT_ASSESSED"),
+                "privileged: " + privilege_label(user),
                 "account state: " + (user.account_state or "NOT_ASSESSED"),
                 _sudo_detail(sudo_by_account.get(user.username)),
             )
@@ -754,6 +767,7 @@ def _filesystem_report_section(
     setid_assessment,
     *,
     detailed_findings: bool = False,
+    detailed_metadata: bool = False,
 ) -> ReportSection:
     filesystem_findings = tuple(assessment.findings)
     setid_findings = tuple(setid_assessment.findings)
@@ -769,7 +783,41 @@ def _filesystem_report_section(
         for result in results
         if result.metadata is not None
     }
-    for path in sorted(attention_paths):
+    setid_by_path = {
+        item.metadata.path: item for item in setid_coverage.files
+    }
+    detail_paths = set(attention_paths)
+    if detailed_metadata:
+        detail_paths.update(result.path for result in results)
+        detail_paths.update(setid_by_path)
+
+    for path in sorted(detail_paths):
+        setid_item = setid_by_path.get(path)
+        if setid_item is not None:
+            if detailed_metadata:
+                elf_status = (
+                    "yes" if setid_item.is_elf is True
+                    else "no" if setid_item.is_elf is False
+                    else "NOT_ASSESSED"
+                )
+                if setid_item.mount_options is None:
+                    mount_options = "NOT_ASSESSED"
+                elif setid_item.mount_options:
+                    mount_options = ", ".join(setid_item.mount_options)
+                else:
+                    mount_options = "(none)"
+
+                summary = (
+                    f"{_file_metadata_summary(setid_item.metadata)} · "
+                    f"ELF: {elf_status} · mount options: {mount_options}"
+                )
+                if setid_item.reason:
+                    summary += f" · review: {setid_item.reason}"
+                details.append(summary)
+            else:
+                details.append(_file_metadata_summary(setid_item.metadata))
+            continue
+
         metadata = metadata_by_path.get(path)
         if metadata is not None:
             details.append(_file_metadata_summary(metadata))
@@ -855,7 +903,7 @@ def _filesystem_report_section(
 
 def _show_filesystem_assessment(*, detailed: bool = False) -> None:
     def build_section(results, assessment, setid_coverage, setid_assessment):
-        return _filesystem_report_section(results, assessment, setid_coverage, setid_assessment, detailed_findings=detailed)
+        return _filesystem_report_section(results, assessment, setid_coverage, setid_assessment, detailed_findings=detailed, detailed_metadata=detailed)
     try:
         result = _make_orchestrator().run_filesystem(section_builder=build_section, sensitive_file_collector=collect_sensitive_file_metadata, sensitive_file_assessor=assess_sensitive_files, setid_collector=collect_setid_files, setid_assessor=assess_setid_files)
     except (OSError, UnicodeError, ValueError) as error:
@@ -987,7 +1035,7 @@ def _show_scan(*, detailed: bool = False) -> None:
         result = _make_orchestrator().run_full_scan(
             users_section_builder=lambda users, sudo: _user_report_section(users, sudo, detailed=detailed),
             filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
-                results, assessment, coverage, setid, detailed_findings=detailed
+                results, assessment, coverage, setid, detailed_findings=detailed, detailed_metadata=detailed
             ),
             ssh_section_builder=_ssh_report_section,
             ssh_findings_builder=_ssh_findings,
