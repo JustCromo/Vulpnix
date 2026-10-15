@@ -227,6 +227,25 @@ COMMIT
         self.assertEqual(input_chain.rules[0].target, "DROP")
         self.assertTrue(input_chain.rules[0].unconditional)
 
+    def test_iptables_preserves_return_as_unconditional_verdict(self):
+        output = """*filter
+:INPUT ACCEPT [0:0]
+-A INPUT -j RETURN
+COMMIT
+"""
+        observation = firewall._parse_iptables_save(
+            output, implementation="iptables"
+        )
+        input_chain = next(
+            chain for chain in observation.chains if chain.name == "INPUT"
+        )
+
+        self.assertEqual(len(input_chain.rules), 1)
+        rule = input_chain.rules[0]
+        self.assertEqual(rule.target, "RETURN")
+        self.assertIsNone(rule.target_chain)
+        self.assertTrue(rule.unconditional)
+
     def test_nft_preserves_filter_chain_type_and_ordered_actions(self):
         payload = {
             "nftables": [

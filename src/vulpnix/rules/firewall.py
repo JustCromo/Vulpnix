@@ -34,9 +34,18 @@ def _is_supported_forward_chain(chain: FirewallChain) -> bool:
 
 
 def _first_unconditional_verdict(chain: FirewallChain):
+    """Return a direct verdict before ambiguous control flow.
+
+    JUMP, GOTO, and RETURN can change which subsequent rules are reached.
+    Defer these cases to conservative assessment.
+    """
     for rule in sorted(chain.rules, key=lambda item: item.position):
+        if rule.target in {"JUMP", "GOTO", "RETURN"}:
+            return None
+
         if rule.unconditional and rule.target in {"ACCEPT", "DROP", "REJECT"}:
             return rule
+
     return None
 
 
@@ -86,7 +95,12 @@ def _review_finding(
 
 
 def _jump_chain_note(chain: FirewallChain, chain_index) -> str:
-    """Summarize rule actions in referenced custom chains without judging coverage."""
+    """Summarize nested custom-chain actions without judging coverage.
+
+    Nested JUMP/GOTO references are followed for explanatory reporting only.
+    Cycles, missing metadata, and excessive traversal are reported explicitly.
+    This is not a full firewall control-flow evaluator.
+    """
     targets = tuple(
         dict.fromkeys(
             rule.target_chain
@@ -97,29 +111,68 @@ def _jump_chain_note(chain: FirewallChain, chain_index) -> str:
     if not targets:
         return ""
 
-    summaries = []
-    for name in targets:
-        target = chain_index.get(
-            (chain.implementation, chain.family, chain.table, name)
-        )
-        if target is None:
-            summaries.append(f"{name}: chain metadata unavailable")
-            continue
-        if not target.rules:
-            summaries.append(f"{name}: no rule actions collected")
-            continue
+    max_depth = 8
+    remaining_references = [64]
+    root_key = (
+        chain.implementation,
+        chain.family,
+        chain.table,
+        chain.name,
+    )
 
+    def summarize(
+        name: str,
+        ancestry: tuple[tuple[str, str, str, str], ...],
+        depth: int,
+    ) -> str:
+        key = (
+            chain.implementation,
+            chain.family,
+            chain.table,
+            name,
+        )
+
+        if key in ancestry:
+            return f"{name}: circular chain reference detected"
+
+        target = chain_index.get(key)
+        if target is None:
+            return f"{name}: chain metadata unavailable"
+
+        if not target.rules:
+            return f"{name}: no rule actions collected"
+
+        if depth > max_depth:
+            return f"{name}: maximum nested-chain analysis depth reached"
+
+        if remaining_references[0] <= 0:
+            return f"{name}: nested-chain reference limit reached"
+
+        remaining_references[0] -= 1
+        path = ancestry + (key,)
         action_parts = []
+
         for rule in sorted(target.rules, key=lambda item: item.position):
             action = (
                 f"rule {rule.position}={rule.target or 'unknown'} "
                 f"({'unconditional' if rule.unconditional else 'conditional'})"
             )
+
             if rule.conditions:
                 action += "; matches: " + " AND ".join(rule.conditions)
+
+            if rule.target in {"JUMP", "GOTO"} and rule.target_chain:
+                nested = summarize(rule.target_chain, path, depth + 1)
+                action += f"; {rule.target.lower()} -> {nested}"
+
             action_parts.append(action)
-        actions = ", ".join(action_parts)
-        summaries.append(f"{name}: {actions}")
+
+        return f"{name}: " + ", ".join(action_parts)
+
+    summaries = [
+        summarize(name, (root_key,), 1)
+        for name in targets
+    ]
 
     return (
         " Referenced custom-chain rule actions: "

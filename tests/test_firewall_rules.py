@@ -182,6 +182,63 @@ class FirewallForwardPolicyTests(unittest.TestCase):
         self.assertIn("guest_cross", forward.evidence)
         self.assertIn("default policy ACCEPT", forward.evidence)
 
+    def test_forward_does_not_treat_verdict_after_jump_as_direct_fallback(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(
+                FirewallRule(1, "JUMP", True, "guest_input"),
+                FirewallRule(2, "DROP", True),
+            ),
+        )
+        guest_input = input_chain(
+            name="guest_input",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "ACCEPT", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_input)
+        )
+        finding = next(
+            item for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIn("default policy ACCEPT", finding.evidence)
+        self.assertNotIn("unconditional DROP at rule 2", finding.evidence)
+        self.assertIn("guest_input", finding.evidence)
+
+    def test_forward_does_not_misclassify_accept_after_jump(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="DROP",
+            rules=(
+                FirewallRule(1, "JUMP", True, "guest_input"),
+                FirewallRule(2, "ACCEPT", True),
+            ),
+        )
+        guest_input = input_chain(
+            name="guest_input",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "DROP", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_input)
+        )
+        finding_ids = {item.rule_id for item in assessment.findings}
+
+        self.assertNotIn("FIREWALL-FORWARD-ACCEPT-001", finding_ids)
+        self.assertTrue(
+            any("default policy DROP" in check for check in assessment.checks)
+        )
+
+
     def test_forward_review_summarizes_custom_chain_actions(self):
         forward = input_chain(
             name="forward",
@@ -216,6 +273,164 @@ class FirewallForwardPolicyTests(unittest.TestCase):
         self.assertIn("rule 1=ACCEPT (conditional)", finding.evidence)
         self.assertIn("rule 2=REJECT (conditional)", finding.evidence)
         self.assertIn("does not prove that these conditions cover all traffic", finding.evidence)
+
+
+    def test_forward_review_recursively_summarizes_nested_chain_actions(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(FirewallRule(1, "JUMP", True, "guest_input"),),
+        )
+        guest_input = input_chain(
+            name="guest_input",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "JUMP", True, "guest_services"),),
+        )
+        guest_services = input_chain(
+            name="guest_services",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "DROP", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_input, guest_services)
+        )
+        finding = next(
+            item for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIn("guest_services", finding.evidence)
+        self.assertIn("rule 1=DROP (unconditional)", finding.evidence)
+        self.assertIn("jump ->", finding.evidence)
+
+    def test_forward_review_reports_circular_chain_reference(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(FirewallRule(1, "JUMP", True, "guest_input"),),
+        )
+        guest_input = input_chain(
+            name="guest_input",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "JUMP", True, "guest_services"),),
+        )
+        guest_services = input_chain(
+            name="guest_services",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "GOTO", True, "guest_input"),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_input, guest_services)
+        )
+        finding = next(
+            item for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIn("circular chain reference detected", finding.evidence)
+
+    def test_forward_review_reports_missing_nested_chain_metadata(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(FirewallRule(1, "JUMP", True, "guest_input"),),
+        )
+        guest_input = input_chain(
+            name="guest_input",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "JUMP", True, "missing_nested_chain"),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_input)
+        )
+        finding = next(
+            item for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIn(
+            "missing_nested_chain: chain metadata unavailable",
+            finding.evidence,
+        )
+
+    def test_forward_review_preserves_empty_nested_chain_note(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(FirewallRule(1, "JUMP", True, "guest_input"),),
+        )
+        guest_input = input_chain(
+            name="guest_input",
+            hook=None,
+            policy=None,
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_input)
+        )
+        finding = next(
+            item for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIn(
+            "guest_input: no rule actions collected",
+            finding.evidence,
+        )
+
+    def test_forward_return_prevents_later_drop_from_being_direct_verdict(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(
+                FirewallRule(1, "RETURN", True),
+                FirewallRule(2, "DROP", True),
+            ),
+        )
+
+        assessment = assess_firewall_policy(snapshot_for(forward))
+        finding = next(
+            item for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIn("default policy ACCEPT", finding.evidence)
+        self.assertNotIn("unconditional DROP at rule 2", finding.evidence)
+
+    def test_input_return_prevents_later_accept_from_being_direct_verdict(self):
+        chain = input_chain(
+            name="input",
+            hook="input",
+            policy="DROP",
+            rules=(
+                FirewallRule(1, "RETURN", True),
+                FirewallRule(2, "ACCEPT", True),
+            ),
+        )
+
+        assessment = assess_firewall_policy(snapshot_for(chain))
+        finding_ids = {item.rule_id for item in assessment.findings}
+
+        self.assertNotIn("FIREWALL-INPUT-ACCEPT-001", finding_ids)
+        self.assertTrue(
+            any(
+                "default policy DROP denies" in check
+                for check in assessment.checks
+            )
+        )
 
 
     def test_forward_drop_policy_is_observed_without_forward_finding(self):

@@ -81,10 +81,11 @@ the acceptance gate in `QUALITY.md`. These statuses are separate; implementation
 completion alone does not establish qualification.
 
 M1–M4 and M4.5 are implementation-complete, but their retrospective quality
-qualification is **PENDING REVIEW**. The initial M5 implementation is now being
-built in parallel at the user's request; this does not waive the acceptance gate
-for qualification or release. This is a verification gate, not an assumption
-that existing implementations are defective.
+qualification is **PENDING REVIEW**. M5 implementation is actively in progress.
+Socket and interface inventories, read-only firewall collection, and preliminary
+firewall-policy analysis are implemented, but the remaining M5 work and its
+acceptance criteria have not all been completed. This does not waive the
+acceptance gate for qualification or release.
 
 ## Milestones
 
@@ -141,38 +142,50 @@ updated logo, documentation, and architecture tests.
 
 ### M5 — Network Exposure
 
-**Status: IN PROGRESS — initial socket inventory implemented**
+**Status: IN PROGRESS — socket/interface inventory and preliminary firewall policy analysis implemented**
 
 **Quality qualification: PENDING REVIEW**
 
 **Purpose:** understand what the Linux host exposes locally and over the network.
 
-Initial implementation now includes:
+Implemented:
 
-- Listening TCP and bound UDP socket inventory via `ss`, with a `/proc/net`
+- Listening TCP and bound UDP socket inventory using `ss`, with a `/proc/net`
   fallback when `ss` is unavailable or unusable.
-- Normalized protocol/address/port/state and loopback/non-loopback/all-interface
-  bind scope.
-- Best-effort process ownership attribution; incomplete attribution results in
-  partial coverage rather than a false claim of completeness.
-- Selected kernel-hardening `sysctl` checks.
-- Metadata-only assessment of SSH host private-key files and systemd service
-  unit fragments/drop-ins.
-- Compact default terminal output plus expanded output with `--details`.
+- Normalized protocol, address, port, state, bind scope, and best-effort
+  process ownership attribution. Incomplete attribution is not presented as
+  complete coverage.
+- Network interface inventory, IP addresses, and operational state using
+  supported local interfaces and commands.
+- Read-only firewall collection for supported nftables, `iptables-save`, and
+  `ip6tables-save` sources, with explicit configured, empty, unavailable, and
+  error states.
+- Preliminary, conservative analysis of supported firewall input and forwarding
+  policies, including distinct IPv4 and IPv6 finding IDs where applicable.
+- Explainable `REVIEW` findings when the available rules cannot support a
+  reliable security conclusion.
+- Integration with individual and full scans, detailed reporting, and the
+  existing risk assessment.
 
-Remaining M5 objectives:
+Remaining objectives:
 
-- Enumerate network interfaces, IP addresses, and operational state.
-- Detect firewall implementations and collect their configured state safely.
-- Keep bind scope distinct from claims about internet reachability.
-- Never interpret a listening port alone as a vulnerability.
-- Preserve rootless/privileged coverage semantics across commands and full scan.
+- Improve analysis of chain jumps, conditional and unconditional verdicts,
+  hooks, tables, address families, and interactions between supported firewall
+  implementations without claiming complete semantic coverage.
+- Expand adversarial tests for empty and custom chains, IPv4, IPv6, `inet`,
+  jumps, unsupported layouts, unavailable commands, permission limits, and
+  incomplete or malformed collection results.
+- Verify consistent rootless and privileged behavior across individual scans
+  and the full assessment.
+- Confirm that findings, evidence, recommendations, and risk scoring remain
+  consistent for both individual network scans and full assessments.
+- Complete M5 acceptance testing and quality qualification according to
+  `QUALITY.md`.
 
-The implemented socket inventory is an initial M5 component, not a complete
-network-exposure or firewall assessment. Expected deliverables include stable
-normalized interface/socket/firewall observations, explainable rules, and tests
-for IPv4/IPv6, loopback/all-interface exposure, unavailable tools, and permission
-limits.
+A listening socket, assigned address, configured firewall ruleset, or permissive
+forwarding policy alone does not prove internet reachability or establish a
+verified vulnerability. The current firewall analysis is preliminary and does
+not resolve every interaction between chains, hooks, and backends.
 
 ### M6 — Packages & CVE
 
@@ -234,5 +247,7 @@ Vulpnix Core
 7. Prefer small, testable changes and adversarial tests.
 8. Run the full test suite and `git diff --check` before milestone completion.
 
-**Current focus: retroactive quality qualification for M1–M4 and M4.5.**
-M5 implementation starts after the initial review is recorded.
+**Current focus: complete the remaining M5 Network Exposure implementation.**
+Quality qualification for M1–M4 and M4.5 remains pending and must be tracked
+separately. Do not start M6 until M5's remaining work and acceptance criteria
+have been reviewed and recorded.
