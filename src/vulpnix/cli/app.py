@@ -77,6 +77,8 @@ from vulpnix.cli.report import (
     render_report_section,
     render_scan_report,
 )
+
+from vulpnix.cli.html_report import save_html_report
 from vulpnix.rules.filesystem import (
     FilesystemAssessment,
     assess_sensitive_files,
@@ -144,6 +146,7 @@ _OUTPUT_LAYOUT_CACHE: tuple[int, int, int, str, list[str]] | None = None
 _SECTION_WIDTH = 48
 _LIVE_PROGRESS = False
 _MASCOT_SESSION_ENABLED = False
+_MASCOT_PLACEMENT_ACTIVE: bool | None = None
 _MASCOT_TOP_ROW = 4
 _MASCOT_RIGHT_MARGIN = 8
 _MASCOT_CONTENT_GAP = 4
@@ -300,6 +303,10 @@ def _show_info() -> None:
 
 def _clear_screen() -> None:
     """Clear the visible output and restore the welcome presentation."""
+    global _MASCOT_PLACEMENT_ACTIVE
+    # Clearing the terminal can invalidate Kitty's visible image placement.
+    # Force a refresh on the next real shell render.
+    _MASCOT_PLACEMENT_ACTIVE = False
     clear_screen()
     columns, rows = terminal_size()
     _show_presentation(kitty_mascot=_mascot_visible(columns, rows))
@@ -338,6 +345,10 @@ def _format_uptime(seconds: float | None) -> str:
     return " ".join(parts)
 
 
+_REPORT_EXPORT_FORMAT: str | None = None
+_REPORT_EXPORT_AREA: str | None = None
+
+
 def _render_result(result, *, details: bool = True) -> None:
     """Render a normalized scan result with the shared terminal renderer."""
     report = ScanReport(
@@ -351,6 +362,18 @@ def _render_result(result, *, details: bool = True) -> None:
         privilege=result.privilege,
         details=details,
     )
+    if _REPORT_EXPORT_FORMAT == "html":
+        try:
+            destination = save_html_report(
+                report,
+                area=_REPORT_EXPORT_AREA,
+            )
+        except (OSError, ValueError) as error:
+            print(f"Could not save HTML report: {error}")
+        else:
+            print(f"HTML report saved: {destination}")
+        return
+
     print("\n".join(render_scan_report(report, terminal_size()[0])))
 
 
@@ -2030,6 +2053,24 @@ _COMPLETIONS = (
     "exit",
 )
 
+_SCAN_AREAS = (
+    "host",
+    "hardening",
+    "users",
+    "service",
+    "ssh",
+    "filesystem",
+    "network",
+    "packages",
+)
+_COMPLETIONS += (
+    "scan --format html",
+    "scan --details --format html",
+    *(f"scan {area} --format html" for area in _SCAN_AREAS),
+    *(f"scan {area} --details --format html" for area in _SCAN_AREAS),
+)
+
+
 
 def _command_completions(prefix: str) -> tuple[str, ...]:
     """Return Vulpnix commands matching the text before the cursor."""
@@ -2062,29 +2103,63 @@ def _dispatch_command(command_name: str) -> bool:
     parts = command_name.split()
 
     if parts and parts[0] == "scan":
+        global _REPORT_EXPORT_FORMAT, _REPORT_EXPORT_AREA
+
         usage = (
-            "Usage: scan [--details] | scan <area> [--details] "
+            "Usage: scan [--details] [--format html] | "
+            "scan <area> [--details] [--format html] "
             "(areas: host, hardening, users, service, ssh, filesystem, "
             "network, packages)"
         )
 
-        if parts == ["scan"] or parts == ["scan", "--details"]:
-            _show_scan(detailed=len(parts) == 2)
+        area = None
+        detailed = False
+        output_format = None
+        invalid = False
+        index = 1
+
+        while index < len(parts):
+            token = parts[index]
+
+            if token == "--details":
+                if detailed:
+                    invalid = True
+                detailed = True
+                index += 1
+            elif token == "--format":
+                if index + 1 >= len(parts):
+                    invalid = True
+                    index += 1
+                else:
+                    requested_format = parts[index + 1]
+                    if output_format is not None or requested_format != "html":
+                        invalid = True
+                    else:
+                        output_format = requested_format
+                    index += 2
+            elif token.startswith("--"):
+                invalid = True
+                index += 1
+            elif token not in _SCAN_AREAS or area is not None:
+                invalid = True
+                index += 1
+            else:
+                area = token
+                index += 1
+
+        if invalid:
+            print(usage)
             return True
 
-        if len(parts) >= 2:
-            area = parts[1]
-            arguments = parts[2:]
+        previous_format = _REPORT_EXPORT_FORMAT
+        previous_area = _REPORT_EXPORT_AREA
+        _REPORT_EXPORT_FORMAT = output_format
+        _REPORT_EXPORT_AREA = area
 
-            if len(arguments) > 1 or any(
-                argument != "--details" for argument in arguments
-            ):
-                print(usage)
-                return True
-
-            detailed = bool(arguments)
-
-            if area == "host":
+        try:
+            if area is None:
+                _show_scan(detailed=detailed)
+            elif area == "host":
                 if detailed:
                     _show_host_assessment("HOST DETAILS", details=True)
                 else:
@@ -2121,9 +2196,11 @@ def _dispatch_command(command_name: str) -> bool:
                     _show_packages_assessment(detailed=True)
                 else:
                     _show_packages_assessment()
-            else:
-                print(usage)
-            return True
+        finally:
+            _REPORT_EXPORT_FORMAT = previous_format
+            _REPORT_EXPORT_AREA = previous_area
+
+        return True
 
     command = _COMMANDS_BY_NAME.get(command_name)
     if command is None:
@@ -2548,9 +2625,33 @@ def _render_shell(
     selection: MouseTextSelection | None = None,
 ) -> None:
     """Render scrollable shell output with a persistent right-hand mascot."""
+    global _MASCOT_SESSION_ENABLED, _MASCOT_PLACEMENT_ACTIVE
+
     columns, rows = terminal_size()
     rows = max(rows, 1)
+    uploaded_this_render = False
+    refresh_succeeded = True
+
+    mascot_fits = (
+        columns >= MASCOT_MIN_TERMINAL_WIDTH
+        and rows >= MASCOT_MIN_TERMINAL_HEIGHT
+        and kitty_graphics_supported()
+    )
+    # Also initialize the image if Vulpnix started in a narrow terminal.
+    if mascot_fits and not _MASCOT_SESSION_ENABLED:
+        _MASCOT_SESSION_ENABLED = transmit_png(mascot_image_path(), sys.stdout)
+        uploaded_this_render = _MASCOT_SESSION_ENABLED
+
     mascot_visible = _mascot_visible(columns, rows)
+
+    # A resize or clear may invalidate the old placement or cached image.
+    # Re-upload on the transition back to a visible layout.
+    if (
+        mascot_visible
+        and _MASCOT_PLACEMENT_ACTIVE is False
+        and not uploaded_this_render
+    ):
+        refresh_succeeded = transmit_png(mascot_image_path(), sys.stdout)
 
     visible_suggestions = suggestions[:max(rows - 2, 0)]
     page_height = max(rows - 1 - len(visible_suggestions), 0)
@@ -2671,6 +2772,9 @@ def _render_shell(
     output.append(f"\033[{prompt_row + 1};{prompt_column}H")
     sys.stdout.write("".join(output))
     sys.stdout.flush()
+    _MASCOT_PLACEMENT_ACTIVE = bool(
+        mascot_visible and (uploaded_this_render or refresh_succeeded)
+    )
 
 
 def _read_command(
@@ -2855,9 +2959,10 @@ def _read_command(
 
 
 def _run_interactive_shell() -> None:
-    global _LIVE_PROGRESS, _MASCOT_SESSION_ENABLED
+    global _LIVE_PROGRESS, _MASCOT_SESSION_ENABLED, _MASCOT_PLACEMENT_ACTIVE
     _LIVE_PROGRESS = True
     _MASCOT_SESSION_ENABLED = False
+    _MASCOT_PLACEMENT_ACTIVE = None
     output_lines: list[str] = []
     history: list[str] = []
 

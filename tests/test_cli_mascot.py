@@ -239,15 +239,61 @@ class MascotShellIntegrationTests(unittest.TestCase):
         self.assertNotIn(placement_command(), rendered)
         self.assertIn("full width fallback report", rendered)
 
+    def test_mascot_is_reuploaded_when_wide_layout_returns(self):
+        output = io.StringIO()
+        app._OUTPUT_LAYOUT_CACHE = None
+
+        with (
+            patch.object(
+                app, "terminal_size",
+                side_effect=[(100, 40), (175, 45)],
+            ),
+            patch.object(app, "_MASCOT_SESSION_ENABLED", True),
+            patch.object(app, "_MASCOT_PLACEMENT_ACTIVE", True),
+            patch.object(app, "kitty_graphics_supported", return_value=True),
+            patch.object(app, "transmit_png", return_value=True) as upload,
+            redirect_stdout(output),
+        ):
+            app._render_shell(["narrow layout"], "", 0, 0)
+            app._render_shell(["wide layout"], "", 0, 0)
+
+        upload.assert_called_once()
+        rendered = output.getvalue()
+        self.assertIn(delete_placement_command(), rendered)
+        self.assertIn(placement_command(), rendered)
+
+    def test_starting_narrow_loads_mascot_after_resize(self):
+        output = io.StringIO()
+        app._OUTPUT_LAYOUT_CACHE = None
+
+        with (
+            patch.object(
+                app, "terminal_size",
+                side_effect=[(100, 40), (175, 45)],
+            ),
+            patch.object(app, "_MASCOT_SESSION_ENABLED", False),
+            patch.object(app, "_MASCOT_PLACEMENT_ACTIVE", None),
+            patch.object(app, "kitty_graphics_supported", return_value=True),
+            patch.object(app, "transmit_png", return_value=True) as upload,
+            redirect_stdout(output),
+        ):
+            app._render_shell(["initial narrow layout"], "", 0, 0)
+            app._render_shell(["resized wide layout"], "", 0, 0)
+
+        upload.assert_called_once()
+        self.assertIn(placement_command(), output.getvalue())
+
     def test_clear_restores_the_persistent_mascot_layout(self):
         with (
             patch.object(app, "_MASCOT_SESSION_ENABLED", True),
+            patch.object(app, "_MASCOT_PLACEMENT_ACTIVE", True),
             patch.object(app, "kitty_graphics_supported", return_value=True),
             patch.object(app, "terminal_size", return_value=(175, 45)),
             patch.object(app, "clear_screen"),
             patch.object(app, "_show_presentation") as show_presentation,
         ):
             app._clear_screen()
+            self.assertFalse(app._MASCOT_PLACEMENT_ACTIVE)
 
         show_presentation.assert_called_once_with(kitty_mascot=True)
 
