@@ -45,7 +45,9 @@ class PackageCliTests(unittest.TestCase):
         report = output.getvalue()
         self.assertIn("SOFTWARE INVENTORY", report)
         self.assertIn("PACKAGE VULNERABILITY AUDIT", report)
-        self.assertIn("demo", report)
+        self.assertIn("Test advisory source", report)
+        self.assertIn("Installed packages: 1", report)
+        self.assertNotIn("demo", report)
         self.assertIn("dpkg-query", report)
 
     def test_package_scan_renders_finding_and_risk(self):
@@ -74,7 +76,7 @@ class PackageCliTests(unittest.TestCase):
             patch.object(app, "collect_package_audit", return_value=audit_result),
             redirect_stdout(output),
         ):
-            app._dispatch_command("scan packages")
+            app._dispatch_command("scan packages --details")
 
         report = output.getvalue()
         self.assertIn("PACKAGE VULNERABILITY AUDIT", report)

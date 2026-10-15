@@ -34,8 +34,11 @@ pending.
   next step is. Recommendations must not claim more than the evidence supports.
 - A fact such as an active service, listening port, or SUID bit is not by itself
   proof of a vulnerability.
-- Do not introduce aggregate risk scores until their inputs, assumptions, and
-  treatment of unknowns can be explained and tested.
+- The observed host/scan-scope risk score is the maximum eligible per-finding
+  score among verified FAIL findings with complete valid risk profiles; scores are
+  not summed. It is 0/25 when no eligible verified FAIL finding is scored. Unscored
+  verified failures and incomplete coverage must be disclosed separately: 0/25 is
+  not proof of safety, and unknowns must not be converted into reassurance.
 
 ### Safety and least privilege
 

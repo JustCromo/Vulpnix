@@ -238,7 +238,7 @@ class SSHCommandTests(unittest.TestCase):
         host.assert_called_once_with()
         services.assert_called_once_with()
         ssh.assert_called_once_with()
-        self.assertLess(output.getvalue().index("ATTENTION"), output.getvalue().index("DETAILS"))
+        self.assertLess(output.getvalue().index("ATTENTION"), output.getvalue().index("AREA SUMMARY"))
         self.assertIn("example-host", output.getvalue())
         self.assertIn("Password authentication", output.getvalue())
 

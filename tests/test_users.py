@@ -161,7 +161,7 @@ class UsersCLItests(unittest.TestCase):
         self.assertIn("1 account: other-account inspection skipped; current process lacks permission", normalized)
         self.assertIn("Sudo access verified for 1 account", rendered)
         self.assertIn("3 accounts could not be evaluated for account state", rendered)
-        self.assertIn("DETAILS", rendered)
+        self.assertNotIn("DETAILS", rendered)
         self.assertIn("root", rendered)
         self.assertNotIn("alice · UID 1000", rendered)
         self.assertNotIn("bob · UID 1001", rendered)
@@ -257,7 +257,8 @@ class UsersCLItests(unittest.TestCase):
             app._show_scan()
 
         self.assertIn("USERS", output.getvalue())
-        self.assertIn("• root", output.getvalue())
+        self.assertIn("Local accounts: 4", output.getvalue())
+        self.assertNotIn("• root", output.getvalue())
         self.assertNotIn("alice · UID 1000", output.getvalue())
 
 

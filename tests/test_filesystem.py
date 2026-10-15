@@ -292,10 +292,10 @@ class FilesystemCLITests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn("FILESYSTEM", rendered)
-        self.assertIn("FACTS", rendered)
+        self.assertIn("Permission checks completed", rendered)
         self.assertIn("ASSESSMENT", rendered)
         self.assertIn("REVIEW", rendered)
-        self.assertIn("DETAILS", rendered)
+        self.assertNotIn("DETAILS", rendered)
         self.assertIn("/etc/shadow", rendered)
         self.assertIn("/etc/gshadow", rendered)
         self.assertIn("owner UID is not mapped", rendered)
@@ -355,7 +355,8 @@ class FilesystemCLITests(unittest.TestCase):
 
         rendered = output.getvalue()
         self.assertIn("FILESYSTEM", rendered)
-        self.assertIn("FS-SENSITIVE-WRITE-001", rendered)
+        self.assertIn("Sensitive system file is writable by group or others", rendered)
+        self.assertNotIn("FS-SENSITIVE-WRITE-001", rendered)
         self.assertIn("/etc/passwd", rendered)
 
 

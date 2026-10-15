@@ -5,14 +5,15 @@ import re
 import unittest
 from dataclasses import replace
 from contextlib import redirect_stdout
-from unittest.mock import patch
+from unittest.mock import MagicMock, patch
 
 from vulpnix.cli import app
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
-from vulpnix.cli.terminal import display_width
+from vulpnix.cli.terminal import accent, color, display_width
 from vulpnix.findings import Finding, FindingStatus
 from vulpnix.risk import assess_findings
+from vulpnix.risk.engine import assess_host_risk
 from vulpnix.models import SSHConfig, Service, SystemInfo, ListeningEndpoint, NetworkSnapshot
 from vulpnix.scan.privilege import PrivilegeContext
 
@@ -66,6 +67,24 @@ class ScanReportLayoutTests(unittest.TestCase):
         capture = io.StringIO()
         with redirect_stdout(capture):
             return render_scan_report(sample_report(), width)
+
+
+    def test_compact_report_summarizes_findings_without_technical_dump(self) -> None:
+        report = replace(sample_report(), details=False)
+        lines = render_scan_report(report, 80)
+        joined = "\n".join(lines)
+
+        self.assertIn("ASSESSMENT SUMMARY", joined)
+        self.assertIn("Coverage:", joined)
+        self.assertIn("ATTENTION", joined)
+        self.assertIn("REVIEW REQUIRED", joined)
+        self.assertIn("SSH password authentication is enabled", joined)
+        self.assertIn("AREA SUMMARY", joined)
+        self.assertIn("FINAL RESULT", joined)
+        self.assertNotIn("FINDING DETAILS", joined)
+        self.assertNotIn("Why it matters:", joined)
+        self.assertNotIn("Evidence:", joined)
+        self.assertNotIn("Global PasswordAuthentication: yes", joined)
 
     def test_80_column_report_uses_single_column_and_keeps_details(self) -> None:
         lines = self.render(80)
@@ -319,6 +338,265 @@ class FullScanWidthTests(unittest.TestCase):
         ):
             self.assertTrue(any(service_name in line for line in narrow))
             self.assertTrue(any(service_name in line for line in wide))
+
+
+
+    def test_final_result_names_verified_issue_and_recommendation(self) -> None:
+        base = sample_report()
+        finding = replace(
+            base.findings[0],
+            status=FindingStatus.FAIL,
+            recommendation="Disable SSH password authentication unless required.",
+        )
+        report = replace(
+            base,
+            findings=(finding,),
+            risk_assessment=assess_findings((finding,)),
+            details=False,
+        )
+
+        rendered = "\n".join(render_scan_report(report, 80))
+        self.assertIn("ISSUES DETECTED", rendered)
+        self.assertIn("VERIFIED ISSUE(S) · 1", rendered)
+        self.assertIn("SSH password authentication is enabled", rendered)
+        self.assertIn("Recommended action:", rendered)
+        self.assertIn(
+            "Disable SSH password authentication unless required.",
+            rendered,
+        )
+
+    def test_report_uses_semantic_colors_on_interactive_terminal(self) -> None:
+        base = sample_report()
+        finding = replace(base.findings[0], status=FindingStatus.FAIL)
+        report = replace(
+            base,
+            findings=(finding,),
+            risk_assessment=assess_findings((finding,)),
+            details=False,
+        )
+        fake_stdout = MagicMock()
+        fake_stdout.isatty.return_value = True
+
+        with patch("vulpnix.cli.terminal.sys.stdout", fake_stdout):
+            rendered = "\n".join(render_scan_report(report, 80))
+
+        self.assertIn("38;2;255;112;112m", rendered)
+        self.assertIn("38;2;255;205;128m", rendered)
+
+    def test_no_color_disables_styles_even_on_interactive_terminal(self) -> None:
+        fake_stdout = MagicMock()
+        fake_stdout.isatty.return_value = True
+
+        with (
+            patch.dict("os.environ", {"NO_COLOR": "1"}),
+            patch("vulpnix.cli.terminal.sys.stdout", fake_stdout),
+        ):
+            self.assertEqual(color("status", (255, 112, 112), bold=True), "status")
+            self.assertEqual(accent("brand", bold=True), "brand")
+
+
+class HostRiskSummaryReportTests(unittest.TestCase):
+    def test_observed_risk_score_is_present_when_no_verified_findings_exist(self):
+        report = replace(
+            sample_report(),
+            findings=(),
+            risk_assessment=assess_findings(()),
+            details=False,
+        )
+        rendered = " ".join(render_scan_report(report, 80))
+        self.assertIn("Observed host risk score: 0/25", rendered)
+        self.assertIn("Coverage: COMPLETE", rendered)
+        self.assertNotIn("Coverage qualifier:", rendered)
+        self.assertIn("COMPLETE", rendered)
+
+    def test_final_result_and_risk_score_form_one_group(self):
+        for details in (False, True):
+            with self.subTest(details=details):
+                report = replace(sample_report(), details=details)
+                raw_lines = render_scan_report(report, 80)
+                lines = [
+                    re.sub(r"\\x1b\\[[0-9;]*m", "", line)
+                    for line in raw_lines
+                ]
+                final_index = next(
+                    index for index, line in enumerate(lines)
+                    if "FINAL RESULT" in line
+                )
+                score_index = next(
+                    index for index, line in enumerate(lines)
+                    if "HOST RISK SCORE · CURRENT SCAN SCOPE" in line
+                )
+                score_value_index = next(
+                    index for index, line in enumerate(lines)
+                    if "Observed host risk score:" in line
+                )
+                coverage_index = next(
+                    index for index, line in enumerate(lines)
+                    if "Coverage: LIMITED" in line
+                )
+
+                self.assertEqual(score_index, final_index + 2)
+                self.assertEqual(score_value_index, score_index + 1)
+                self.assertEqual(coverage_index, score_value_index + 1)
+
+                rendered = "\\n".join(lines)
+                self.assertNotIn("Coverage qualifier:", rendered)
+                self.assertIn("REVIEW REQUIRED", rendered)
+
+
+    def test_observed_risk_score_uses_maximum_not_sum(self):
+        base = sample_report().findings[0]
+        first = replace(
+            base,
+            rule_id="TEST-RISK-ONE",
+            status=FindingStatus.FAIL,
+            impact=3,
+            probability=3,
+            risk_rationale="test profile",
+        )
+        second = replace(
+            base,
+            rule_id="TEST-RISK-TWO",
+            status=FindingStatus.FAIL,
+            impact=4,
+            probability=4,
+            risk_rationale="test profile",
+        )
+        assessment = assess_findings((first, second))
+        score = assess_host_risk(assessment)
+        self.assertEqual(score.score, 16)
+
+        report = replace(
+            sample_report(),
+            findings=(first, second),
+            risk_assessment=assessment,
+            details=False,
+        )
+        rendered = " ".join(render_scan_report(report, 80))
+        self.assertIn("Observed host risk score: 16/25", rendered)
+        self.assertNotIn("Observed host risk score: 25/25", rendered)
+
+
+
+class ReportPlacementAndFactColorTests(unittest.TestCase):
+    def test_host_risk_score_is_inside_final_result_in_both_layouts(self):
+        base = sample_report()
+
+        for details in (False, True):
+            with self.subTest(details=details):
+                report = replace(base, details=details)
+                rendered = "\n".join(render_scan_report(report, 80))
+
+                final_index = rendered.index("FINAL RESULT")
+                score_index = rendered.index("HOST RISK SCORE")
+
+                self.assertGreater(score_index, final_index)
+                self.assertEqual(
+                    rendered.count("HOST RISK SCORE · CURRENT SCAN SCOPE"),
+                    1,
+                )
+                self.assertIn("Observed host risk score:", rendered)
+
+    def test_section_titles_are_neutral_and_fact_values_are_styled(self):
+        section = ReportSection(
+            title="FILESYSTEM",
+            facts=(
+                ("Checks passing", "3"),
+                ("Verified concerns", "1"),
+                ("Review", "2"),
+            ),
+        )
+        base = replace(
+            sample_report(),
+            sections=(section,),
+            findings=(),
+            risk_assessment=assess_findings(()),
+        )
+
+        green = "\x1b[38;2;134;239;172m"
+        red = "\x1b[38;2;255;112;112m"
+        amber = "\x1b[38;2;255;205;128m"
+
+        for details in (False, True):
+            with self.subTest(details=details):
+                fake_stdout = MagicMock()
+                fake_stdout.isatty.return_value = True
+                report = replace(base, details=details)
+
+                with patch("vulpnix.cli.terminal.sys.stdout", fake_stdout):
+                    rendered = "\n".join(render_scan_report(report, 80))
+
+                lines = rendered.splitlines()
+                heading = next(
+                    line for line in lines if line.strip() == "FILESYSTEM"
+                )
+                self.assertEqual(heading, "FILESYSTEM")
+
+                passing_line = next(
+                    line for line in lines if "Checks passing" in line
+                )
+                concern_line = next(
+                    line for line in lines if "Verified concerns" in line
+                )
+                review_line = next(
+                    line
+                    for line in lines
+                    if re.search(
+                        r"\bReview(?::|\s{2,})",
+                        re.sub(r"\x1b\[[0-9;]*m", "", line),
+                    )
+                )
+
+                self.assertIn(green, passing_line)
+                self.assertGreater(
+                    passing_line.index(green),
+                    passing_line.index("Checks passing") + len("Checks passing"),
+                )
+
+                self.assertIn(red, concern_line)
+                self.assertGreater(
+                    concern_line.index(red),
+                    concern_line.index("Verified concerns")
+                    + len("Verified concerns"),
+                )
+
+                self.assertIn(amber, review_line)
+                self.assertGreater(
+                    review_line.index(amber),
+                    review_line.index("Review") + len("Review"),
+                )
+
+    def test_detailed_table_labels_remain_neutral(self):
+        fake_stdout = MagicMock()
+        fake_stdout.isatty.return_value = True
+
+        with patch("vulpnix.cli.terminal.sys.stdout", fake_stdout):
+            rendered = "\n".join(
+                render_scan_report(replace(sample_report(), details=True), 80)
+            )
+
+        green = "\x1b[38;2;134;239;172m"
+        amber = "\x1b[38;2;255;205;128m"
+        root_line = next(
+            line for line in rendered.splitlines()
+            if "Root login" in line and "key login only" in line
+        )
+        password_line = next(
+            line for line in rendered.splitlines()
+            if "Password authentication" in line and "yes" in line
+        )
+
+        self.assertIn(green, root_line)
+        self.assertGreater(
+            root_line.index(green),
+            root_line.index("Root login") + len("Root login"),
+        )
+        self.assertIn(amber, password_line)
+        self.assertGreater(
+            password_line.index(amber),
+            password_line.index("Password authentication")
+            + len("Password authentication"),
+        )
 
 
 if __name__ == "__main__":

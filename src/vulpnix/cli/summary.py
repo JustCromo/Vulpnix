@@ -102,21 +102,21 @@ def build_assessment_summary(
         severity_breakdown = ()
         if coverage is AssessmentCoverage.PARTIAL:
             description = (
-                "No verified security issues were found, but some checks "
-                "could not be completed reliably."
+                "No verified security issues were identified by the "
+                "completed checks."
             )
             action = (
-                "No verified vulnerability requires immediate remediation. "
-                "Review incomplete checks if full coverage is required."
+                "Review incomplete checks to determine whether further "
+                "assessment is needed."
             )
         else:
             description = (
-                "No verified security issues were found, but one or more items "
-                "need review."
+                "No verified security issues were identified; one or more "
+                "items need review."
             )
             action = (
-                "No verified vulnerability requires immediate remediation. "
-                "Review the flagged items for context."
+                "Review flagged items to determine whether further "
+                "assessment is needed."
             )
     else:
         result = AssessmentResult.NO_VERIFIED_ISSUES

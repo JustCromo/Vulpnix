@@ -104,3 +104,29 @@ def assess_findings(findings) -> RiskAssessment:
         scored=tuple(scored),
         unscored_verified=tuple(unscored_verified),
     )
+
+
+@dataclass(frozen=True, slots=True)
+class HostRiskScore:
+    """Observed score derived from eligible verified findings."""
+
+    score: int
+    level: RiskLevel | None
+    scored_findings: int
+    unscored_verified: int
+
+
+def assess_host_risk(assessment: RiskAssessment) -> HostRiskScore:
+    """Use the maximum eligible Impact × Probability score, not a sum.
+
+    A zero score means no eligible verified FAIL finding was scored. It does
+    not establish that a host is secure if coverage is incomplete or a
+    verified finding could not be scored.
+    """
+    highest = max(assessment.scored, key=lambda item: item.score, default=None)
+    return HostRiskScore(
+        score=highest.score if highest else 0,
+        level=highest.level if highest else None,
+        scored_findings=len(assessment.scored),
+        unscored_verified=len(assessment.unscored_verified),
+    )

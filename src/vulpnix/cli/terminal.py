@@ -24,21 +24,19 @@ _ANSI_SEQUENCE = re.compile(r"\033\[[0-?]*[ -/]*[@-~]")
 
 
 def color(text: str, rgb: tuple[int, int, int], *, bold: bool = False) -> str:
-    """Apply a true-color foreground style when attached to a terminal."""
-    if not sys.stdout.isatty():
+    """Apply true-color styling only when the terminal permits it."""
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
         return text
     red, green, blue = rgb
     weight = "1;" if bold else ""
     return f"\033[{weight}38;2;{red};{green};{blue}m{text}{_RESET_STYLE}"
 
-
 def accent(text: str, *, bold: bool = False) -> str:
-    """Color branding with Vulpnix orange when attached to a terminal."""
-    if not sys.stdout.isatty():
+    """Color Vulpnix branding orange when terminal colors are enabled."""
+    if os.environ.get("NO_COLOR") or not sys.stdout.isatty():
         return text
     weight = "1;" if bold else ""
     return f"\033[{weight}38;2;255;179;71m{text}{_RESET_STYLE}"
-
 
 def clear_screen() -> None:
     """Clear the visible terminal screen when running interactively."""

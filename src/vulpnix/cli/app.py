@@ -2226,21 +2226,51 @@ def _is_command_frame_heading(line: str, content_width: int) -> bool:
 
 
 def _wrap_command_frame_line(line: str, width: int) -> list[str]:
-    """Wrap an output line while retaining plain-text indentation where possible."""
+    """Wrap output without losing a uniform ANSI style on continuation lines."""
+    width = max(1, width)
     if display_width(line) <= width:
         return [line.rstrip()]
 
-    leading = line[:len(line) - len(line.lstrip(" "))]
+    reset = "\033[0m"
+    prefix_parts = []
+    index = 0
+
+    while line.startswith("\033[", index):
+        end = line.find("m", index + 2)
+        if end < 0:
+            break
+        prefix_parts.append(line[index:end + 1])
+        index = end + 1
+
+    prefix = "".join(prefix_parts)
+    body = line[index:]
+    suffix = ""
+
+    if body.endswith(reset):
+        body = body[:-len(reset)]
+        suffix = reset
+
+    # The report uses one SGR prefix and one reset for status-colored lines.
+    # Duplicate that style for each wrapped row, keeping indentation intact.
+    if prefix and "\033[" not in body:
+        leading = body[:len(body) - len(body.lstrip(" "))]
+        available = max(1, width - display_width(leading))
+        content = body[len(leading):]
+        chunks = wrap_text(content, available)
+        if leading:
+            chunks = [leading + chunk for chunk in chunks]
+        return [prefix + chunk + suffix for chunk in chunks]
+
+    # Mixed-style lines are rare; use their visible text for safe layout.
+    plain = _strip_terminal_styles(line)
+    leading = plain[:len(plain) - len(plain.lstrip(" "))]
     if leading and display_width(leading) < width:
         available = max(1, width - display_width(leading))
         return [
-            leading + part
-            for part in wrap_text(line[len(leading):], available)
+            leading + chunk
+            for chunk in wrap_text(plain[len(leading):], available)
         ]
-
-    return wrap_text(line, width)
-
-
+    return wrap_text(plain, width)
 
 def _render_command_frame(
     title: str,

@@ -159,5 +159,24 @@ def _strip(text):
     return "".join(result)
 
 
+
+class ANSIFrameWrappingTests(unittest.TestCase):
+    def test_uniform_ansi_style_survives_wrapping(self):
+        style = "\033[1;38;2;255;112;112m"
+        reset = "\033[0m"
+        original = style + "  Coverage qualifier: partial checks need review." + reset
+
+        for width in (20, 36):
+            with self.subTest(width=width):
+                result = app._wrap_command_frame_line(original, width)
+                self.assertTrue(all(display_width(line) <= width for line in result))
+                self.assertTrue(all(line.startswith(style) for line in result))
+                self.assertTrue(all(line.endswith(reset) for line in result))
+                visible = " ".join(
+                    app._strip_terminal_styles(line).strip() for line in result
+                )
+                self.assertIn("Coverage qualifier: partial checks", visible)
+
+
 if __name__ == "__main__":
     unittest.main()

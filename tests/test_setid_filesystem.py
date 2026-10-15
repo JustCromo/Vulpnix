@@ -298,8 +298,9 @@ class SetIdCliTests(unittest.TestCase):
         ):
             app._dispatch_command("scan filesystem")
         rendered = output.getvalue()
-        self.assertIn("FAIL · Active set-ID ELF file is world-writable (FS-SETID-WORLD-WRITE-001)", rendered)
-        self.assertIn("FS-SETID-WORLD-WRITE-001", rendered)
+        self.assertIn("[FAIL] Active set-ID ELF file is world-writable", rendered)
+        self.assertNotIn("FS-SETID-WORLD-WRITE-001", rendered)
+        self.assertIn(item.metadata.path, rendered)
         self.assertIn("Set-ID regular files: 11", rendered)
         self.assertNotIn("ordinary-suid", rendered)
 

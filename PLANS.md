@@ -262,9 +262,11 @@ without a complete valid profile remain explicitly unscored. Package/CVE
 findings may provide an explicit risk profile when sufficient evidence is
 available.
 
-There is no overall host-wide risk score. Aggregating individual finding
-scores into a single host score remains deferred; missing evidence must never
-be converted into either risk or reassurance.
+An observed host/scan-scope risk score uses the maximum eligible per-finding
+score among verified `FAIL` findings with complete risk profiles; it is not a sum.
+The score is 0/25 when no eligible finding is scored. Unscored verified failures
+and incomplete coverage are reported separately. Missing evidence must never be
+converted into either risk or reassurance; targeted scans score only their scope.
 
 The recent automated test run passed, including risk-engine and risk-profile
 coverage tests. This does not replace the acceptance checks in `QUALITY.md`.

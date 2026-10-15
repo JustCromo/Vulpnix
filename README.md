@@ -209,11 +209,16 @@ and inventories without changing the security rules.
 listening port, active service, non-default setting, or SUID/SGID bit is not by
 itself proof of a vulnerability.
 
-Verified `FAIL` findings with documented risk profiles can receive a qualitative
+Verified `FAIL` findings with documented risk profiles receive a qualitative
 score using impact (1–5) multiplied by probability (1–5). These factors express
 a documented assessment, not statistical probabilities. Findings without a
-complete valid profile remain unscored. Vulpnix does not currently calculate one
-overall host-wide score. Package vulnerability correlation is an initial,
+complete valid profile remain unscored.
+
+The observed host/scan-scope risk score is the maximum eligible per-finding score,
+not a sum. It is always displayed on a 0–25 scale, with 0/25 meaning no eligible
+verified `FAIL` finding was scored. Unscored verified failures and incomplete
+coverage are shown separately; 0/25 is not proof of safety. Targeted scans score
+only their reported scope. Package vulnerability correlation remains an initial,
 source-limited implementation, not a complete vulnerability scanner.
 
 ## Requirements and data sources
