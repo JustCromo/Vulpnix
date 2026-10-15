@@ -28,6 +28,11 @@ from vulpnix.collectors import (
     collect_service_unit_file_metadata,
 )
 from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
+from vulpnix.collectors.package_audit import collect_package_audit
+from vulpnix.collectors.packages import collect_package_inventory
+from vulpnix.collectors.storage import collect_storage_snapshot
+from vulpnix.models.storage import StorageStatus
+from vulpnix.rules.storage import assess_storage
 from vulpnix.models import (
     FileMetadata,
     FileMetadataResult,
@@ -161,6 +166,9 @@ def _show_help() -> None:
                     print("  scan filesystem  Sensitive file metadata and set-ID checks")
                     print("  scan filesystem --details  Include expanded findings")
                     print("  scan network [--details]  Listening sockets and bind scope")
+                    print("  scan packages  Installed software inventory (offline)")
+                    print("  scan packages --cve  Inventory plus CVE lookup (network)")
+                    print("  scan --cve  Full assessment plus CVE lookup (network)")
                     print("  Run once with: sudo vulpnix — all commands in the shell inherit UID 0")
 
 
@@ -1190,17 +1198,250 @@ def _filesystem_report_section(
     )
 
 
-def _show_filesystem_assessment(*, detailed: bool = False) -> None:
-    def build_section(results, assessment, setid_coverage, setid_assessment):
-        return _filesystem_report_section(results, assessment, setid_coverage, setid_assessment, detailed_findings=detailed, detailed_metadata=detailed)
+
+
+def _format_storage_size(value):
+    """Format a non-negative byte count for a readable terminal report."""
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return "Unavailable"
+
+    units = ("B", "KiB", "MiB", "GiB", "TiB", "PiB")
+    amount = float(value)
+    unit = units[0]
+
+    for candidate in units:
+        unit = candidate
+        if amount < 1024 or candidate == units[-1]:
+            break
+        amount /= 1024
+
+    return f"{amount:.1f} {unit}" if unit != "B" else f"{value} B"
+
+
+def _storage_percent(available, total):
+    """Return a percentage only when both capacity measurements are valid."""
+    if (
+        isinstance(available, bool)
+        or isinstance(total, bool)
+        or not isinstance(available, int)
+        or not isinstance(total, int)
+        or total <= 0
+        or available < 0
+        or available > total
+    ):
+        return "Unavailable"
+    return f"{available * 100.0 / total:.1f}%"
+
+
+def _storage_report_section(snapshot, findings, *, details=False):
+    """Build a compact capacity summary and optional mount inventory."""
+    filesystems = snapshot.filesystems
+    measurable = sum(
+        item.total_bytes is not None and item.available_bytes is not None
+        for item in filesystems
+    )
+    inode_measurable = sum(
+        item.total_inodes is not None and item.available_inodes is not None
+        for item in filesystems
+    )
+    low_space = sum(
+        item.rule_id.startswith("STORAGE-SPACE-LOW-")
+        for item in findings
+    )
+    low_inodes = sum(
+        item.rule_id.startswith("STORAGE-INODES-LOW-")
+        for item in findings
+    )
+    mount_reviews = sum(
+        item.rule_id.startswith("FILESYSTEM-TEMP-MOUNT-OPTIONS-")
+        for item in findings
+    )
+    unresolved = sum(item.status is FindingStatus.REVIEW for item in findings)
+
+    items = []
+
+    if details:
+        limit = 80
+        for item in filesystems[:limit]:
+            options = ",".join(item.mount_options) or "(none reported)"
+            inode_text = (
+                f"{item.available_inodes}/{item.total_inodes} available "
+                f"({_storage_percent(item.available_inodes, item.total_inodes)})"
+                if item.available_inodes is not None and item.total_inodes is not None
+                else "Unavailable"
+            )
+            items.append(
+                f"{item.mount_point} | "
+                f"type={item.fs_type or 'unknown'} | "
+                f"source={item.source or 'unknown'} | "
+                f"available={_format_storage_size(item.available_bytes)} of "
+                f"{_format_storage_size(item.total_bytes)} "
+                f"({_storage_percent(item.available_bytes, item.total_bytes)}) | "
+                f"inodes={inode_text} | "
+                f"options={options} | status={item.status.value}"
+            )
+
+        if len(filesystems) > limit:
+            items.append(
+                f"{len(filesystems) - limit} additional mount(s) omitted "
+                "from the detail view."
+            )
+    elif findings:
+        # Finding titles are already displayed in the report's attention area.
+        # Avoid repeating all of them again inside this section.
+        items.append(
+            f"{len(findings)} storage review item(s) appear in the assessment findings."
+        )
+    elif snapshot.status is StorageStatus.COLLECTED:
+        items.append(
+            "No configured storage review thresholds were crossed in the "
+            "measurements available."
+        )
+    else:
+        items.append(
+            "Storage coverage is incomplete. Unavailable measurements are "
+            "not considered healthy."
+        )
+
+    messages = snapshot.messages
+    message_limit = 10 if details else 3
+    items.extend(f"REVIEW: {message}" for message in messages[:message_limit])
+    if len(messages) > message_limit:
+        items.append(
+            f"{len(messages) - message_limit} additional collector message(s) omitted."
+        )
+
+    return ReportSection(
+        title="DISK & FILESYSTEM CAPACITY",
+        status=(
+            None
+            if snapshot.status is StorageStatus.COLLECTED
+            else snapshot.status.value
+        ),
+        facts=(
+            ("Mounted filesystems", str(len(filesystems))),
+            ("Capacity measurable", str(measurable)),
+            ("Inode counts measurable", str(inode_measurable)),
+            ("Low available storage", str(low_space)),
+            ("Low available inodes", str(low_inodes)),
+            ("Mount-option reviews", str(mount_reviews)),
+            ("Storage findings to review", str(unresolved)),
+            ("Collection status", snapshot.status.value),
+        ),
+        items=tuple(items),
+        items_label=(
+            "Mount inventory (expanded):" if details
+            else "Storage summary:"
+        ),
+        footer=(
+            "Low capacity indicates a possible availability problem, not by "
+            "itself a security vulnerability. Mount-option checks are contextual."
+        ),
+    )
+
+
+def _run_storage_result(*, details=False):
+    """Collect and assess mounted filesystems as an independent scan area."""
+    orchestrator = _make_orchestrator()
+    scope = (
+        "mounted filesystem inventory",
+        "storage capacity",
+        "inode availability",
+        "temporary filesystem mount options",
+    )
+
     try:
-        result = _make_orchestrator().run_filesystem(section_builder=build_section, sensitive_file_collector=collect_sensitive_file_metadata, sensitive_file_assessor=assess_sensitive_files, setid_collector=collect_setid_files, setid_assessor=assess_setid_files)
+        snapshot = collect_storage_snapshot()
+        findings = assess_storage(snapshot)
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        UnicodeError,
+        ValueError,
+    ) as error:
+        result = orchestrator._result(
+            sections=(
+                ReportSection(
+                    "DISK & FILESYSTEM CAPACITY",
+                    status="NOT_ASSESSED",
+                    message=(
+                        "Storage assessment could not be completed: "
+                        f"{_display_value(str(error))}"
+                    ),
+                ),
+            ),
+            scope=scope,
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=1,
+        )
+        return result
+
+    section = _storage_report_section(snapshot, findings, details=details)
+    complete = snapshot.status is StorageStatus.COLLECTED
+
+    return orchestrator._result(
+        sections=(section,),
+        findings=findings,
+        scope=scope,
+        coverage=(
+            AssessmentCoverage.COMPLETE
+            if complete
+            else AssessmentCoverage.PARTIAL
+        ),
+        review_items=(
+            len(snapshot.messages)
+            + (
+                1
+                if snapshot.status is StorageStatus.NOT_ASSESSED
+                and not snapshot.messages
+                else 0
+            )
+        ),
+    )
+
+def _show_filesystem_assessment(*, detailed: bool = False) -> None:
+    """Run M4 file checks and M7 mounted-filesystem capacity checks."""
+    def build_section(results, assessment, setid_coverage, setid_assessment):
+        return _filesystem_report_section(
+            results,
+            assessment,
+            setid_coverage,
+            setid_assessment,
+            detailed_findings=detailed,
+            detailed_metadata=detailed,
+        )
+
+    try:
+        result = _make_orchestrator().run_filesystem(
+            section_builder=build_section,
+            sensitive_file_collector=collect_sensitive_file_metadata,
+            sensitive_file_assessor=assess_sensitive_files,
+            setid_collector=collect_setid_files,
+            setid_assessor=assess_setid_files,
+        )
     except (OSError, UnicodeError, ValueError) as error:
         result = _make_orchestrator()._result(
-            sections=(ReportSection("FILESYSTEM", status="NOT_ASSESSED", message=f"Filesystem checks could not be fully assessed: {_display_value(str(error))}"),),
-            scope=("filesystem metadata", "set-ID files"), review_items=1,
+            sections=(
+                ReportSection(
+                    "FILESYSTEM",
+                    status="NOT_ASSESSED",
+                    message=(
+                        "Filesystem checks could not be fully assessed: "
+                        f"{_display_value(str(error))}"
+                    ),
+                ),
+            ),
+            scope=("filesystem metadata", "set-ID files"),
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=1,
         )
+
+    result = _combine_results(
+        result,
+        _run_storage_result(details=detailed),
+    )
     _render_result(result, details=detailed)
+
 
 
 def _ssh_error_message(error: Exception) -> str:
@@ -1312,7 +1553,204 @@ def _ssh_report_section(config: SSHConfig) -> ReportSection:
     )
 
 
-def _show_scan(*, detailed: bool = False) -> None:
+
+
+def _package_inventory_report_section(inventory, *, details=False):
+    """Build a report section for locally installed package metadata."""
+    limit = 60 if details else 8
+    packages = inventory.packages
+
+    items = tuple(
+        f"{package.name} · {package.version}"
+        + (f" · {package.architecture}" if package.architecture else "")
+        for package in packages[:limit]
+    )
+
+    if not items:
+        items = ("No usable installed-package records were collected.",)
+
+    if len(packages) > limit:
+        items += (
+            f"{len(packages) - limit} additional package(s) omitted; "
+            "use --details to expand the inventory.",
+        )
+
+    items += tuple(f"REVIEW: {message}" for message in inventory.messages)
+
+    return ReportSection(
+        title="SOFTWARE INVENTORY",
+        status=None if inventory.status == "OK" else inventory.status,
+        facts=(
+            ("Distribution", inventory.distribution_name),
+            ("Distribution ID", inventory.distribution_id or "Unavailable"),
+            ("Release", inventory.release or "Unavailable"),
+            ("Package manager", inventory.manager),
+            ("Installed packages", str(len(packages))),
+            ("Inventory status", inventory.status),
+        ),
+        items=items,
+        items_label="Installed packages (sample):",
+        footer=(
+            "Inventory records describe installed package metadata; "
+            "they do not establish whether packages are free from vulnerabilities."
+        ),
+    )
+
+
+def _package_audit_report_section(audit, *, details=False):
+    """Build a report section for package advisory correlation."""
+    findings = audit.findings
+    limit = 40 if details else 10
+
+    confirmed = sum(item.status is FindingStatus.FAIL for item in findings)
+    review = sum(item.status is FindingStatus.REVIEW for item in findings)
+
+    items = tuple(
+        f"[{item.status.value}] {item.rule_id}: {item.title}"
+        for item in findings[:limit]
+    )
+
+    if not items:
+        items = (
+            "No matching affected-package records were returned by this source. "
+            "This is not proof that the system has no vulnerabilities.",
+        )
+
+    if len(findings) > limit:
+        items += (
+            f"{len(findings) - limit} additional advisory finding(s) omitted; "
+            "use --details to expand this section.",
+        )
+
+    items += tuple(f"REVIEW: {message}" for message in audit.messages)
+
+    return ReportSection(
+        title="PACKAGE VULNERABILITY AUDIT",
+        status=None if audit.status == "OK" else audit.status,
+        facts=(
+            ("Advisory source", audit.source),
+            ("Packages checked", str(audit.packages_checked)),
+            ("Advisory findings", str(len(findings))),
+            ("Confirmed matches", str(confirmed)),
+            ("Review matches", str(review)),
+            ("Audit status", audit.status),
+        ),
+        items=items,
+        items_label="Advisory correlation results:",
+        footer=(
+            "Coverage depends on the selected source and supported ecosystem. "
+            "No matching result is not proof of absence."
+        ),
+    )
+
+
+def _run_package_result(*, include_cve=False, details=False):
+    """Run a local inventory and optionally query advisory sources."""
+    orchestrator = _make_orchestrator()
+
+    try:
+        inventory = collect_package_inventory()
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        UnicodeError,
+        ValueError,
+    ) as error:
+        return orchestrator._result(
+            sections=(
+                ReportSection(
+                    "SOFTWARE INVENTORY",
+                    status="ERROR",
+                    message=(
+                        "Package inventory failed: "
+                        f"{_display_value(str(error))}"
+                    ),
+                ),
+            ),
+            scope=("installed software inventory",),
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=1,
+        )
+
+    inventory_result = orchestrator._result(
+        sections=(
+            _package_inventory_report_section(inventory, details=details),
+        ),
+        scope=("installed software inventory",),
+        coverage=(
+            AssessmentCoverage.COMPLETE
+            if inventory.status == "OK" and include_cve
+            else AssessmentCoverage.PARTIAL
+        ),
+        review_items=(
+            len(inventory.messages)
+            + (1 if inventory.status not in {"OK", "PARTIAL"} else 0)
+        ),
+    )
+
+    # Inventory-only mode deliberately performs no advisory network requests.
+    if not include_cve:
+        return inventory_result
+
+    try:
+        audit = collect_package_audit(inventory)
+    except (
+        OSError,
+        subprocess.SubprocessError,
+        UnicodeError,
+        ValueError,
+    ) as error:
+        audit_result = orchestrator._result(
+            sections=(
+                ReportSection(
+                    "PACKAGE VULNERABILITY AUDIT",
+                    status="ERROR",
+                    message=(
+                        "Package advisory assessment failed: "
+                        f"{_display_value(str(error))}"
+                    ),
+                ),
+            ),
+            scope=("package vulnerability correlation",),
+            coverage=AssessmentCoverage.PARTIAL,
+            review_items=1,
+        )
+        return _combine_results(inventory_result, audit_result)
+
+    audit_result = orchestrator._result(
+        sections=(
+            _package_audit_report_section(audit, details=details),
+        ),
+        findings=audit.findings,
+        scope=("package vulnerability correlation",),
+        coverage=(
+            AssessmentCoverage.COMPLETE
+            if audit.status == "OK"
+            else AssessmentCoverage.PARTIAL
+        ),
+        review_items=(
+            len(audit.messages)
+            + (
+                1
+                if audit.status != "OK" and not audit.messages
+                else 0
+            )
+        ),
+    )
+
+    return _combine_results(inventory_result, audit_result)
+
+
+def _show_packages_assessment(*, include_cve=False, detailed=False):
+    """Display package inventory, optionally including remote CVE checks."""
+    result = _run_package_result(
+        include_cve=include_cve,
+        details=detailed,
+    )
+    _render_result(result, details=detailed)
+
+
+def _show_scan(*, detailed: bool = False, include_cve: bool = False) -> None:
     """Run the full assessment and merge supplementary read-only checks."""
     services_seen: list[tuple[Service, ...]] = []
 
@@ -1372,11 +1810,17 @@ def _show_scan(*, detailed: bool = False) -> None:
         _run_hardening_result(details=detailed),
         _run_network_result(details=detailed),
         _run_ssh_host_key_result(details=detailed),
+        _run_storage_result(details=detailed),
     ]
     if services_seen:
         # Collect unit metadata once for all names already captured by the service scan.
         extras.append(_run_unit_file_result(services_seen[0], details=detailed))
     result = _combine_results(result, *extras)
+    if include_cve:
+        result = _combine_results(
+            result,
+            _run_package_result(include_cve=True, details=detailed),
+        )
     _render_result(result, details=detailed)
 
 def _show_presentation() -> None:
@@ -1416,6 +1860,12 @@ _COMPLETIONS = (
     "version",
     "scan",
     "scan --details",
+    "scan --cve",
+    "scan --cve --details",
+    "scan packages",
+    "scan packages --details",
+    "scan packages --cve",
+    "scan packages --cve --details",
     "scan host",
     "scan host --details",
     "scan hardening",
@@ -1466,6 +1916,28 @@ def _dispatch_command(command_name: str) -> bool:
         if parts in (["scan"], ["scan", "--details"]):
             _show_scan(detailed=len(parts) == 2)
             return True
+        if parts in (["scan", "--cve"], ["scan", "--cve", "--details"]):
+            _show_scan(
+                detailed=len(parts) == 3,
+                include_cve=True,
+            )
+            return True
+
+        if len(parts) >= 2 and parts[1] == "packages":
+            arguments = parts[2:]
+            allowed = {"--cve", "--details"}
+            if (
+                len(arguments) == len(set(arguments))
+                and set(arguments).issubset(allowed)
+            ):
+                _show_packages_assessment(
+                    include_cve="--cve" in arguments,
+                    detailed="--details" in arguments,
+                )
+            else:
+                print("Usage: scan packages [--cve] [--details]")
+            return True
+
         if parts == ["scan", "host"]:
             _show_host_assessment("HOST DETAILS")
             return True
@@ -1501,7 +1973,7 @@ def _dispatch_command(command_name: str) -> bool:
             _show_filesystem_assessment(detailed=True)
             return True
         if len(parts) > 1:
-            print("Usage: scan [--details] | host [--details] | hardening [--details] | users [--details] | service [--details] | ssh [--details] | filesystem [--details] | network [--details]")
+            print("Usage: scan [--details] | scan --cve [--details] | host [--details] | hardening [--details] | users [--details] | service [--details] | ssh [--details] | filesystem [--details] | network [--details] | packages [--cve] [--details]")
             return True
 
     command = _COMMANDS_BY_NAME.get(command_name)

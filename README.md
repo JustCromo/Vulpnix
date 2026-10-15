@@ -120,6 +120,8 @@ help
 info
 version
 scan [--details]
+scan --cve [--details]
+scan packages [--cve] [--details]
 scan host [--details]
 scan hardening [--details]
 scan network [--details]
@@ -131,9 +133,10 @@ clear
 exit
 ```
 
-The default output is a concise summary: key facts, findings requiring
-attention, and a final result. `--details` expands check-level evidence or
-inventories where available; it does not change the security rules.
+The terminal output currently presents an overview, findings, assessment sections,
+and a final result. The presentation is still being refined; the reporting milestone
+will consolidate section outcomes into a clearer, action-oriented final review.
+`--details` expands available evidence and inventories without changing the security rules.
 
 ### What the checks do
 
@@ -175,6 +178,22 @@ inventories where available; it does not change the security rules.
   executable ELF content, active set-ID permissions, world-write access, and
   mount options that permit execution.
 
+- **`scan packages`** collects locally installed package metadata using
+  the detected native package manager. This inventory-only operation does not
+  query remote vulnerability sources.
+- **`scan packages --cve`** collects the inventory and queries supported
+  advisory sources. This operation requires network access. Add `--details` to
+  show expanded package and finding information.
+- **`scan --cve`** runs the full host assessment and adds the package CVE
+  correlation. The same `--details` option expands the report. Command
+  consolidation is planned for the reporting milestone; see `PLANS.md`.
+
+Package inventory and vulnerability correlation are separate concepts. A
+successful inventory does not establish that the installed packages are free
+from vulnerabilities. Unsupported ecosystems, stale advisories, missing
+version information, or inconclusive version comparisons must remain
+unassessed or require review rather than being reported as secure.
+
 ## Result semantics
 
 - **NO VERIFIED ISSUES** — no verified failing finding and coverage is complete.
@@ -191,7 +210,8 @@ Verified `FAIL` findings with documented risk profiles can receive a qualitative
 score using impact (1–5) multiplied by probability (1–5). These factors express
 a documented assessment, not statistical probabilities. Findings without a
 complete valid profile remain unscored. Vulpnix does not currently calculate one
-overall host-wide score or correlate installed packages with CVEs.
+overall host-wide score. Package vulnerability correlation is an initial,
+source-limited implementation, not a complete vulnerability scanner.
 
 ## Requirements and data sources
 
@@ -223,6 +243,8 @@ relevant Linux utilities and configuration formats:
 - SSH server configuration: `sshd_config(5)`.
 - systemd services and unit definitions: `systemctl(1)`, `systemd.unit(5)`.
 - Firewall inspection: `nft(8)`, `iptables-save(8)`, `ip6tables-save(8)`.
+- Arch Linux Security Tracker: [official advisory dataset](https://security.archlinux.org/all.json).
+- OSV: [batch query API documentation](https://google.github.io/osv.dev/post-v1-querybatch/).
 
 Consult the manuals installed on the assessed host for the behavior of its
 specific utility versions. Vulpnix implements a selected set of checks; it is not
@@ -283,7 +305,6 @@ release claims are made.
 
 See [PLANS.md](PLANS.md). Network socket visibility, interface inventory,
 read-only firewall ruleset collection with preliminary policy analysis, selected
-kernel hardening, SSH host-key metadata, systemd unit metadata, and qualitative
-per-finding risk scoring are implemented. Comprehensive firewall-policy
-validation, package/CVE correlation, baseline/change detection, host-wide risk
-aggregation, and additional report formats remain planned work.
+kernel hardening, SSH host-key metadata, systemd unit metadata, qualitative
+per-finding risk scoring, installed-package inventory, and initial package/CVE
+correlation are implemented. Package advisory coverage remains limited and requires further validation. Initial disk/filesystem assessment and qualitative per-finding risk scoring are implemented, but M5–M8 still require the applicable quality checks described in `QUALITY.md`. Comprehensive firewall-policy validation, baseline/change detection, host-wide risk aggregation, terminal UX refinement, and export formats remain planned work.

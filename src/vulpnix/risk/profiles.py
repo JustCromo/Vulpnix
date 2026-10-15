@@ -139,4 +139,16 @@ DEFAULT_PROFILES: dict[str, RiskProfile] = {
             "kernel behaviour, and other controls."
         ),
     ),
+    "SSH-HOST-KEY-METADATA-001": RiskProfile(
+        impact=5,
+        probability=3,
+        rationale=(
+            "Impact 5: disclosure or unauthorized modification of an SSH host "
+            "private key can undermine server identity and may enable host "
+            "impersonation. Probability 3: the metadata check establishes an "
+            "ownership or group/other-permission problem, but practical abuse "
+            "depends on local access, the exact permission bits, and how the "
+            "host key is trusted and deployed."
+        ),
+    ),
 }
