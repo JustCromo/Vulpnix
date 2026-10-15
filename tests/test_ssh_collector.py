@@ -153,17 +153,31 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
 
 
 class SSHCommandTests(unittest.TestCase):
+
     def test_help_lists_ssh_as_a_scan_subcommand(self) -> None:
         output = io.StringIO()
         with redirect_stdout(output):
             app._show_help()
 
-        self.assertIn("scan host  Host facts only", output.getvalue())
-        self.assertIn("scan users  User and privilege assessment", output.getvalue())
-        self.assertIn("scan users --details  Include the complete account inventory", output.getvalue())
-        self.assertIn("scan service  Services and startup state", output.getvalue())
-        self.assertIn("scan ssh  SSH assessment only", output.getvalue())
-        self.assertNotIn("scan --ssh", output.getvalue())
+        rendered = output.getvalue()
+        self.assertIn("scan host [--details]", rendered)
+        self.assertIn("│", rendered)
+        self.assertIn(
+            "Host facts; details include selected kernel-hardening checks",
+            rendered,
+        )
+        self.assertIn("scan users [--details]", rendered)
+        expected = (
+            "User and privilege assessment; details show the complete account inventory"
+        )
+        normalized_output = " ".join(
+            rendered.replace("│", " ").split()
+        )
+        self.assertIn(" ".join(expected.split()), normalized_output)
+        self.assertIn("scan service [--details]", rendered)
+        self.assertIn("scan ssh [--details]", rendered)
+        self.assertNotIn("scan --ssh", rendered)
+        self.assertNotIn("EXAMPLES", rendered)
 
     def test_scan_ssh_dispatches_to_ssh_assessment(self) -> None:
         with patch.object(app, "_show_ssh_assessment") as ssh_assessment:

@@ -60,6 +60,7 @@ from vulpnix.cli.terminal import (
     _parse_sgr_mouse_event,
     highlight_columns,
     accent,
+    color,
     alternate_screen,
     clip_ansi_line,
     clear_screen,
@@ -182,50 +183,102 @@ class Command:
 
 
 
+
+
 def _show_help() -> None:
-    """Print available commands, scan areas, options and examples."""
+    """Print commands and descriptions in an aligned two-column layout."""
+    descriptions = {
+        "help": "Show available commands",
+        "info": "Show project purpose and implementation status",
+        "version": "Show installed version",
+        "scan": "Full Linux assessment, including package CVE/advisory review (network)",
+        "clear": "Clear screen and redraw the welcome presentation",
+        "exit": "Close Vulpnix",
+    }
+
+    area_rows = (
+        ("scan host [--details]",
+         "Host facts; details include selected kernel-hardening checks"),
+        ("scan hardening [--details]",
+         "Read-only kernel hardening checks"),
+        ("scan users [--details]",
+         "User and privilege assessment; details show the complete account inventory"),
+        ("scan service [--details]",
+         "Services and startup state; details include unit-file metadata"),
+        ("scan ssh [--details]",
+         "SSH configuration and host-key metadata"),
+        ("scan filesystem [--details]",
+         "Sensitive file metadata and set-ID checks"),
+        ("scan network [--details]",
+         "Listening sockets, interfaces and firewall policy"),
+        ("scan packages [--details]",
+         "Installed packages and CVE/advisory review (network)"),
+    )
+
+    command_rows = tuple(
+        (
+            "scan [--details]" if command.name == "scan" else command.name,
+            descriptions.get(command.name, command.description),
+        )
+        for command in _COMMANDS
+    )
+    option_rows = (
+        ("--details", "Expand technical evidence without changing assessment rules"),
+    )
+    all_rows = command_rows + area_rows + option_rows
+    label_width = max(len(label) for label, _ in all_rows)
+    columns, _ = terminal_size()
+    frame_width = max(12, min(96, columns))
+    description_width = frame_width - label_width - 9
+
+    def print_rows(rows):
+        for command, description in rows:
+            highlighted_command = color(
+                command,
+                _COMMAND_HIGHLIGHT_RGB,
+                bold=True,
+            )
+            separator = color("│", _FRAME_BORDER_RGB)
+
+            if description_width < 18:
+                print(f"  {highlighted_command}")
+                continuation_indent = "    "
+                for continuation in wrap_text(
+                    description,
+                    max(1, frame_width - 8),
+                    initial_indent=continuation_indent,
+                    subsequent_indent=continuation_indent,
+                ):
+                    print(continuation)
+                continue
+
+            wrapped = wrap_text(description, width=description_width)
+            command_padding = " " * max(
+                0, label_width - display_width(command)
+            )
+            print(
+                f"  {highlighted_command}{command_padding} "
+                f"{separator} {wrapped[0]}"
+            )
+            for continuation in wrapped[1:]:
+                print(
+                    f"  {'':<{label_width}} {separator} {continuation}"
+                )
+
     print(f"\n{accent('COMMANDS')}")
     group_names = dict.fromkeys(command.group for command in _COMMANDS)
     for group_name in group_names:
         print(f"\n{group_name}")
-        for command in _COMMANDS:
-            if command.group == group_name:
-                print(f"  {command.name:<8} {command.description}")
+        print_rows(tuple(
+            row for row, command in zip(command_rows, _COMMANDS)
+            if command.group == group_name
+        ))
 
     print(f"\n{accent('SCAN AREAS')}")
-    areas = (
-        ("host", "Host facts only"),
-        ("hardening", "Read-only kernel hardening checks"),
-        ("users", "User and privilege assessment"),
-        ("service", "Services and startup state"),
-        ("ssh", "SSH assessment only"),
-        ("filesystem", "Sensitive file metadata and set-ID checks"),
-        ("network", "Listening sockets and bind scope"),
-        ("packages", "Installed packages and CVE/advisory review (network)"),
-    )
-    for name, description in areas:
-        print(f"  scan {name}  {description}")
+    print_rows(area_rows)
 
     print(f"\n{accent('OPTIONS')}")
-    print("  --details  Show expanded technical evidence")
-
-    print(f"\n{accent('EXAMPLES')}")
-    for example in (
-        "scan",
-        "scan --details",
-        "scan packages",
-        "scan packages --details",
-        "scan ssh --details",
-        "scan network",
-    ):
-        print(f"  {example}")
-
-    print(f"\n{accent('DETAILS EXAMPLES')}")
-    print("  scan host --details  Host facts and kernel hardening checks")
-    print("  scan users --details  Include the complete account inventory")
-    print("  scan service --details  Include unit-file ownership and permissions")
-    print("  scan ssh --details  Show all SSH and host-key metadata checks")
-    print("  scan filesystem --details  Include expanded findings")
+    print_rows(option_rows)
 
     print("\nRun once with: sudo vulpnix — all shell commands inherit UID 0")
 
@@ -2099,17 +2152,250 @@ def _capture_output(callback: Callable[[], object]) -> tuple[object, str]:
     return result, capture.getvalue()
 
 
-def _append_output(lines: list[str], output: str) -> None:
+
+_COMMAND_FRAME_START_PREFIX = "\x00VULPNIX_COMMAND_FRAME:"
+_COMMAND_FRAME_END_MARKER = "\x00VULPNIX_COMMAND_FRAME_END\x00"
+_FRAME_BORDER_RGB = (113, 128, 150)
+_COMMAND_HIGHLIGHT_RGB = (196, 181, 253)
+
+
+def _command_frame_title(command: str) -> str | None:
+    """Map an entered command to a stable, human-readable frame title."""
+    parts = command.strip().split()
+    if not parts:
+        return None
+
+    first = parts[0].lower()
+    if first == "clear":
+        return None
+
+    if first == "scan":
+        if len(parts) > 1 and parts[1] != "--details":
+            area = "".join(
+                character
+                for character in parts[1].upper()
+                if character.isalnum() or character in "-_"
+            )
+            if area:
+                return f"SCAN / {area}"
+        return "SCAN"
+
+    return {
+        "help": "HELP",
+        "info": "INFO",
+        "version": "VERSION",
+        "exit": "EXIT",
+    }.get(first, "COMMAND")
+
+
+def _strip_terminal_styles(text: str) -> str:
+    """Remove CSI styling sequences for layout decisions."""
+    result: list[str] = []
+    index = 0
+
+    while index < len(text):
+        if (
+            text[index] == "\x1b"
+            and index + 1 < len(text)
+            and text[index + 1] == "["
+        ):
+            index += 2
+            while index < len(text):
+                character = text[index]
+                index += 1
+                if "@" <= character <= "~":
+                    break
+            continue
+
+        result.append(text[index])
+        index += 1
+
+    return "".join(result)
+
+
+def _is_command_frame_heading(line: str, content_width: int) -> bool:
+    """Recognize concise uppercase report headings for internal separators."""
+    plain = _strip_terminal_styles(line).strip()
+    letters = [character for character in plain if character.isalpha()]
+
+    return (
+        bool(letters)
+        and not any(character.islower() for character in letters)
+        and display_width(plain) <= min(content_width, 44)
+    )
+
+
+def _wrap_command_frame_line(line: str, width: int) -> list[str]:
+    """Wrap an output line while retaining plain-text indentation where possible."""
+    if display_width(line) <= width:
+        return [line.rstrip()]
+
+    leading = line[:len(line) - len(line.lstrip(" "))]
+    if leading and display_width(leading) < width:
+        available = max(1, width - display_width(leading))
+        return [
+            leading + part
+            for part in wrap_text(line[len(leading):], available)
+        ]
+
+    return wrap_text(line, width)
+
+
+
+def _render_command_frame(
+    title: str,
+    body_lines: list[str],
+    width: int,
+) -> list[str]:
+    """Draw a closed command frame using restrained, consistent colors."""
+    border_rgb = (113, 128, 150)
+    width = max(1, min(width, 96))
+
+    if width < 12:
+        plain_title = f"VULPNIX / {title}"
+        return [
+            *_wrap_command_frame_line(plain_title, width),
+            *(
+                part
+                for line in body_lines
+                for part in _wrap_command_frame_line(line, width)
+            ),
+        ]
+
+    label = f"VULPNIX / {title}"
+    maximum_label_width = max(
+        1,
+        width - display_width("╭─ ") - display_width(" ") - display_width("╮"),
+    )
+    if display_width(label) > maximum_label_width:
+        label = label[:maximum_label_width]
+
+    prefix = f"╭─ {label} "
+    fill = max(0, width - display_width(prefix) - display_width("╮"))
+    top = (
+        color("╭─ ", border_rgb, bold=True)
+        + accent(label, bold=True)
+        + color(" " + "─" * fill + "╮", border_rgb, bold=True)
+    )
+    divider = color("├" + "─" * (width - 2) + "┤", border_rgb)
+    bottom = color("╰" + "─" * (width - 2) + "╯", border_rgb)
+    inner_width = width - 4
+
+    def boxed_row(text: str) -> str:
+        padding = max(0, inner_width - display_width(text))
+        return (
+            color("│", border_rgb)
+            + " "
+            + text
+            + " " * padding
+            + " "
+            + color("│", border_rgb)
+        )
+
+    normalized: list[str] = []
+    for line in body_lines:
+        if not _strip_terminal_styles(line).strip():
+            if normalized and normalized[-1] != "":
+                normalized.append("")
+        else:
+            normalized.append(line)
+
+    while normalized and not normalized[0]:
+        normalized.pop(0)
+    while normalized and not normalized[-1]:
+        normalized.pop()
+
+    rows = [top, divider]
+    last_kind = "divider"
+
+    for line in normalized:
+        if not line:
+            if last_kind not in {"divider", "blank"}:
+                rows.append(boxed_row(""))
+                last_kind = "blank"
+            continue
+
+        if _is_command_frame_heading(line, inner_width):
+            if last_kind == "blank":
+                rows.pop()
+                last_kind = "content"
+            if last_kind != "divider":
+                rows.append(divider)
+                last_kind = "divider"
+
+            rows.append(boxed_row(line))
+            rows.append(divider)
+            last_kind = "divider"
+            continue
+
+        for wrapped in _wrap_command_frame_line(line, inner_width):
+            rows.append(boxed_row(wrapped))
+            last_kind = "content"
+
+    if len(rows) > 2 and last_kind == "divider":
+        rows.pop()
+
+    rows.append(bottom)
+    return rows
+
+def _render_command_sections(lines: list[str], width: int) -> list[str]:
+    """Turn internal command-frame markers into boxes at the current width."""
+    rendered: list[str] = []
+    index = 0
+
+    while index < len(lines):
+        line = lines[index]
+        if not line.startswith(_COMMAND_FRAME_START_PREFIX):
+            rendered.append(line)
+            index += 1
+            continue
+
+        title = line[len(_COMMAND_FRAME_START_PREFIX):].split("\x00", 1)[0]
+        body: list[str] = []
+        index += 1
+
+        while (
+            index < len(lines)
+            and lines[index] != _COMMAND_FRAME_END_MARKER
+        ):
+            body.append(lines[index])
+            index += 1
+
+        if index >= len(lines):
+            # Incomplete markers should never leak into the user's display.
+            rendered.extend(body)
+            break
+
+        rendered.extend(_render_command_frame(title, body, width))
+        index += 1
+
+    return rendered
+
+
+def _append_output(
+    lines: list[str],
+    output: str,
+    *,
+    title: str | None = None,
+) -> None:
+    """Append captured output, deferring command framing until terminal layout."""
     global _OUTPUT_LAYOUT_CACHE
+
     clear_sequence = "\033[2J\033[H"
     if output or clear_sequence in output:
         _OUTPUT_LAYOUT_CACHE = None
+
     if clear_sequence in output:
         lines.clear()
         output = output.replace(clear_sequence, "")
-    if output:
-        lines.extend(output.splitlines())
+        title = None
 
+    if output:
+        if title:
+            lines.append(f"{_COMMAND_FRAME_START_PREFIX}{title}\x00")
+        lines.extend(output.splitlines())
+        if title:
+            lines.append(_COMMAND_FRAME_END_MARKER)
 
 def _fit_output_to_width(
     lines: list[str],
@@ -2138,8 +2424,9 @@ def _fit_output_to_width(
         if cache_key == (cached_id, cached_width, cached_count, cached_last):
             return cached_lines
 
+    formatted_lines = _render_command_sections(lines, width)
     fitted: list[str] = []
-    for line in lines:
+    for line in formatted_lines:
         if _WELCOME_TABLE_MARKER_PREFIX in line:
             marker_start = line.index(_WELCOME_TABLE_MARKER_PREFIX)
             marker_end = line.find(
@@ -2580,7 +2867,10 @@ def _run_interactive_shell() -> None:
                 _LIVE_PROGRESS = False
                 return
 
-            entered = f"{accent('vulpnix>', bold=True)} {command}"
+            entered_command = color(
+                command, _COMMAND_HIGHLIGHT_RGB, bold=True
+            ) if command else ""
+            entered = f"{accent('vulpnix>', bold=True)} {entered_command}"
             output_lines.append(entered)
             if command:
                 history.append(command)
@@ -2588,7 +2878,11 @@ def _run_interactive_shell() -> None:
             keep_running, output = _capture_output(
                 lambda: _dispatch_command(command)
             )
-            _append_output(output_lines, output)
+            _append_output(
+                output_lines,
+                output,
+                title=_command_frame_title(command),
+            )
             if not keep_running:
                 _render_shell(output_lines, "", 0, 0)
                 cleanup_mascot()
