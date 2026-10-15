@@ -69,6 +69,7 @@ class StorageCliIntegrationTests(unittest.TestCase):
             any(f.rule_id == "STORAGE-SPACE-LOW-VAR" for f in result.findings)
         )
 
+
     def test_full_scan_includes_m7_storage_result(self):
         base = base_result("SYSTEM")
         storage = storage_result()
@@ -85,6 +86,7 @@ class StorageCliIntegrationTests(unittest.TestCase):
             patch.object(app, "_run_network_result", return_value=empty),
             patch.object(app, "_run_ssh_host_key_result", return_value=empty),
             patch.object(app, "_run_storage_result", return_value=storage) as run_storage,
+            patch.object(app, "_run_package_result", return_value=empty),
             patch.object(app, "_render_result") as render,
         ):
             app._show_scan()

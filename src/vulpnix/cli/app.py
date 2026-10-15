@@ -96,6 +96,17 @@ from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.rules.hardening import assess_kernel_hardening
 from vulpnix.rules.firewall import assess_firewall_policy
 from vulpnix.scan.progress import ScanProgress, ScanStage
+from vulpnix.cli.mascot import (
+    MASCOT_COLUMNS,
+    MASCOT_MIN_TERMINAL_HEIGHT,
+    MASCOT_MIN_TERMINAL_WIDTH,
+    MASCOT_ROWS,
+    delete_placement_command,
+    kitty_graphics_supported,
+    mascot_image_path,
+    placement_command,
+    transmit_png,
+)
 
 
 _FOX_ART = (
@@ -131,6 +142,32 @@ _TITLE_BOX_WIDTH = 34
 _OUTPUT_LAYOUT_CACHE: tuple[int, int, int, str, list[str]] | None = None
 _SECTION_WIDTH = 48
 _LIVE_PROGRESS = False
+_MASCOT_SESSION_ENABLED = False
+_MASCOT_TOP_ROW = 4
+_MASCOT_RIGHT_MARGIN = 8
+_MASCOT_CONTENT_GAP = 4
+_WELCOME_TABLE_MARKER_PREFIX = "\x00VULPNIX_TABLE_RIGHT:"
+_WELCOME_TABLE_MARKER_END = "\x00"
+
+
+def _mascot_image_column(columns: int) -> int:
+    """Calculate the left edge of the fixed right-hand mascot panel."""
+    return columns - MASCOT_COLUMNS - _MASCOT_RIGHT_MARGIN
+
+
+def _mascot_content_width(columns: int) -> int:
+    """Keep text clear of the mascot while preserving a readable report width."""
+    return max(1, _mascot_image_column(columns) - _MASCOT_CONTENT_GAP)
+
+
+def _mascot_visible(columns: int, rows: int) -> bool:
+    """Return whether the current terminal can safely display the mascot panel."""
+    return (
+        _MASCOT_SESSION_ENABLED
+        and columns >= MASCOT_MIN_TERMINAL_WIDTH
+        and rows >= MASCOT_MIN_TERMINAL_HEIGHT
+        and kitty_graphics_supported()
+    )
 
 
 @dataclass(frozen=True)
@@ -143,8 +180,10 @@ class Command:
     handler: Callable[[], None] | None
 
 
+
+
 def _show_help() -> None:
-    """Print the commands currently supported by the shell."""
+    """Print available commands, scan areas, options and examples."""
     print(f"\n{accent('COMMANDS')}")
     group_names = dict.fromkeys(command.group for command in _COMMANDS)
     for group_name in group_names:
@@ -152,25 +191,43 @@ def _show_help() -> None:
         for command in _COMMANDS:
             if command.group == group_name:
                 print(f"  {command.name:<8} {command.description}")
-                if command.name == "scan":
-                    print("  scan --details  Full assessment with expanded check details")
-                    print("  scan host  Host facts only")
-                    print("  scan host --details  Host facts and kernel hardening checks")
-                    print("  scan hardening [--details]  Read-only kernel hardening checks")
-                    print("  scan users  User and privilege assessment")
-                    print("  scan users --details  Include the complete account inventory")
-                    print("  scan service  Services and startup state")
-                    print("  scan service --details  Include unit-file ownership and permissions")
-                    print("  scan ssh  SSH assessment only")
-                    print("  scan ssh --details  Show all SSH and host-key metadata checks")
-                    print("  scan filesystem  Sensitive file metadata and set-ID checks")
-                    print("  scan filesystem --details  Include expanded findings")
-                    print("  scan network [--details]  Listening sockets and bind scope")
-                    print("  scan packages  Installed software inventory (offline)")
-                    print("  scan packages --cve  Inventory plus CVE lookup (network)")
-                    print("  scan --cve  Full assessment plus CVE lookup (network)")
-                    print("  Run once with: sudo vulpnix — all commands in the shell inherit UID 0")
 
+    print(f"\n{accent('SCAN AREAS')}")
+    areas = (
+        ("host", "Host facts only"),
+        ("hardening", "Read-only kernel hardening checks"),
+        ("users", "User and privilege assessment"),
+        ("service", "Services and startup state"),
+        ("ssh", "SSH assessment only"),
+        ("filesystem", "Sensitive file metadata and set-ID checks"),
+        ("network", "Listening sockets and bind scope"),
+        ("packages", "Installed packages and CVE/advisory review (network)"),
+    )
+    for name, description in areas:
+        print(f"  scan {name}  {description}")
+
+    print(f"\n{accent('OPTIONS')}")
+    print("  --details  Show expanded technical evidence")
+
+    print(f"\n{accent('EXAMPLES')}")
+    for example in (
+        "scan",
+        "scan --details",
+        "scan packages",
+        "scan packages --details",
+        "scan ssh --details",
+        "scan network",
+    ):
+        print(f"  {example}")
+
+    print(f"\n{accent('DETAILS EXAMPLES')}")
+    print("  scan host --details  Host facts and kernel hardening checks")
+    print("  scan users --details  Include the complete account inventory")
+    print("  scan service --details  Include unit-file ownership and permissions")
+    print("  scan ssh --details  Show all SSH and host-key metadata checks")
+    print("  scan filesystem --details  Include expanded findings")
+
+    print("\nRun once with: sudo vulpnix — all shell commands inherit UID 0")
 
 def _show_version() -> None:
     """Print the installed Vulpnix package version."""
@@ -189,9 +246,10 @@ def _show_info() -> None:
 
 
 def _clear_screen() -> None:
-    """Refresh the screen and restore the initial presentation."""
+    """Clear the visible output and restore the welcome presentation."""
     clear_screen()
-    _show_presentation()
+    columns, rows = terminal_size()
+    _show_presentation(kitty_mascot=_mascot_visible(columns, rows))
 
 
 def _display_value(value: str | None) -> str:
@@ -1644,8 +1702,9 @@ def _package_audit_report_section(audit, *, details=False):
     )
 
 
-def _run_package_result(*, include_cve=False, details=False):
-    """Run a local inventory and optionally query advisory sources."""
+
+def _run_package_result(*, details=False):
+    """Run local package inventory and correlate it with advisory sources."""
     orchestrator = _make_orchestrator()
 
     try:
@@ -1679,7 +1738,7 @@ def _run_package_result(*, include_cve=False, details=False):
         scope=("installed software inventory",),
         coverage=(
             AssessmentCoverage.COMPLETE
-            if inventory.status == "OK" and include_cve
+            if inventory.status == "OK"
             else AssessmentCoverage.PARTIAL
         ),
         review_items=(
@@ -1687,10 +1746,6 @@ def _run_package_result(*, include_cve=False, details=False):
             + (1 if inventory.status not in {"OK", "PARTIAL"} else 0)
         ),
     )
-
-    # Inventory-only mode deliberately performs no advisory network requests.
-    if not include_cve:
-        return inventory_result
 
     try:
         audit = collect_package_audit(inventory)
@@ -1730,27 +1785,19 @@ def _run_package_result(*, include_cve=False, details=False):
         ),
         review_items=(
             len(audit.messages)
-            + (
-                1
-                if audit.status != "OK" and not audit.messages
-                else 0
-            )
+            + (1 if audit.status != "OK" and not audit.messages else 0)
         ),
     )
 
     return _combine_results(inventory_result, audit_result)
 
 
-def _show_packages_assessment(*, include_cve=False, detailed=False):
-    """Display package inventory, optionally including remote CVE checks."""
-    result = _run_package_result(
-        include_cve=include_cve,
-        details=detailed,
-    )
+def _show_packages_assessment(*, detailed=False):
+    """Display package inventory and the remote CVE/advisory audit."""
+    result = _run_package_result(details=detailed)
     _render_result(result, details=detailed)
 
-
-def _show_scan(*, detailed: bool = False, include_cve: bool = False) -> None:
+def _show_scan(*, detailed: bool = False) -> None:
     """Run the full assessment and merge supplementary read-only checks."""
     services_seen: list[tuple[Service, ...]] = []
 
@@ -1816,33 +1863,83 @@ def _show_scan(*, detailed: bool = False, include_cve: bool = False) -> None:
         # Collect unit metadata once for all names already captured by the service scan.
         extras.append(_run_unit_file_result(services_seen[0], details=detailed))
     result = _combine_results(result, *extras)
-    if include_cve:
-        result = _combine_results(
-            result,
-            _run_package_result(include_cve=True, details=detailed),
-        )
+    result = _combine_results(
+        result,
+        _run_package_result(details=detailed),
+    )
     _render_result(result, details=detailed)
 
-def _show_presentation() -> None:
-    """Render the Vulpnix shell header and current privilege mode."""
-    top = "╭" + "─" * _TITLE_BOX_WIDTH + "╮"
-    bottom = "╰" + "─" * _TITLE_BOX_WIDTH + "╯"
+
+def _show_presentation(*, kitty_mascot: bool = False) -> None:
+    """Render a coordinated, width-aware Vulpnix welcome table."""
     context = current_privilege_context()
-    print(_PRESENTATION_INDENT + accent(top))
-    for label in ("VULPNIX", "Linux security assessment"):
-        padding = " " * max(_TITLE_BOX_WIDTH - len(label) - 2, 0)
-        print(_PRESENTATION_INDENT + accent(f"│ {label}{padding} │", bold=label == "VULPNIX"))
-    print(_PRESENTATION_INDENT + accent(bottom))
-    print(_PRESENTATION_INDENT + f"Mode: {context.mode} · UID: {context.uid}")
+    columns, rows = terminal_size()
+    indent = _PRESENTATION_INDENT
+
+    graphic_layout = (
+        kitty_mascot
+        and columns >= MASCOT_MIN_TERMINAL_WIDTH
+        and rows >= MASCOT_MIN_TERMINAL_HEIGHT
+    )
+    available_width = (
+        _mascot_content_width(columns) - len(indent)
+        if graphic_layout
+        else columns - len(indent) - 1
+    )
+    box_width = max(5, min(96, available_width))
+    inner_width = max(1, box_width - 4)
+
+    def border(label: str, first: str, last: str) -> None:
+        label = label[:max(1, box_width - 8)]
+        prefix = f"{first}─ ✦ {label} "
+        fill = max(0, box_width - display_width(prefix) - display_width(last))
+        print(indent + accent(prefix + "─" * fill + last, bold=True))
+
+    def row(value: str = "") -> None:
+        parts = wrap_text(value, width=inner_width) if value else [""]
+        for part in parts:
+            padding = " " * max(0, inner_width - display_width(part))
+            print(indent + "│ " + part + padding + " " + f"{_WELCOME_TABLE_MARKER_PREFIX}{box_width}{_WELCOME_TABLE_MARKER_END}")
+
+    label_width = min(10, max(3, inner_width // 4))
+    value_width = max(1, inner_width - label_width - 1)
+
+    def labelled_row(label: str, value: str) -> None:
+        key = label[:label_width].ljust(label_width)
+        chunks = wrap_text(value, width=value_width) or [""]
+        for index, chunk in enumerate(chunks):
+            key_text = accent(key, bold=True) if index == 0 else " " * label_width
+            padding = " " * max(0, value_width - display_width(chunk))
+            print(indent + "│ " + key_text + " " + chunk + padding + " " + f"{_WELCOME_TABLE_MARKER_PREFIX}{box_width}{_WELCOME_TABLE_MARKER_END}")
+
+    border("VULPNIX · LINUX HOST SECURITY", "╭", "╮")
+    row()
+    row("Evidence-based security assessment for Linux hosts.")
+    row("Verified findings. Clear next steps. Honest coverage.")
+    row("Missing or inconclusive evidence is never a pass.")
+    row()
+
+    border("ABOUT", "├", "┤")
+    row("Vulpnix inspects Linux configuration and selected security controls.")
+    row("It distinguishes verified issues, items needing review, and")
+    row("checks that could not be completed reliably.")
+    row()
+
+    border("QUICK START", "├", "┤")
+    labelled_row("help", "Explore available commands and options")
+    labelled_row("scan", "Run a full Linux host assessment")
+    labelled_row("info", "Learn about Vulpnix")
+    labelled_row("clear", "Refresh this welcome screen")
+    row()
+
+    border("SESSION", "├", "┤")
+    labelled_row("MODE", f"{context.mode} · UID {context.uid}")
     if not context.privileged:
-        print(_PRESENTATION_INDENT + "Some checks may require elevated privileges: sudo vulpnix")
-    print()
-    if terminal_size()[0] >= 105:
-        for row in _FOX_ART:
-            print(_PRESENTATION_INDENT + accent(row))
-    else:
-        print(_PRESENTATION_INDENT + accent("[ VULPNIX ]", bold=True))
-        print(_PRESENTATION_INDENT + "Terminal width is too narrow for the full logo.")
+        labelled_row("PRIVILEGES", "Some checks need elevated access")
+        labelled_row("", "Start with: sudo vulpnix")
+    row()
+    print(indent + accent("╰" + "─" * (box_width - 2) + "╯", bold=True))
+
 
 
 _COMMANDS = (
@@ -1860,12 +1957,8 @@ _COMPLETIONS = (
     "version",
     "scan",
     "scan --details",
-    "scan --cve",
-    "scan --cve --details",
     "scan packages",
     "scan packages --details",
-    "scan packages --cve",
-    "scan packages --cve --details",
     "scan host",
     "scan host --details",
     "scan hardening",
@@ -1909,71 +2002,74 @@ def _common_completion(candidates: tuple[str, ...]) -> str:
     return common
 
 
+
+
 def _dispatch_command(command_name: str) -> bool:
     """Dispatch one known command; return False when the shell should exit."""
     parts = command_name.split()
+
     if parts and parts[0] == "scan":
-        if parts in (["scan"], ["scan", "--details"]):
+        usage = (
+            "Usage: scan [--details] | scan <area> [--details] "
+            "(areas: host, hardening, users, service, ssh, filesystem, "
+            "network, packages)"
+        )
+
+        if parts == ["scan"] or parts == ["scan", "--details"]:
             _show_scan(detailed=len(parts) == 2)
             return True
-        if parts in (["scan", "--cve"], ["scan", "--cve", "--details"]):
-            _show_scan(
-                detailed=len(parts) == 3,
-                include_cve=True,
-            )
-            return True
 
-        if len(parts) >= 2 and parts[1] == "packages":
+        if len(parts) >= 2:
+            area = parts[1]
             arguments = parts[2:]
-            allowed = {"--cve", "--details"}
-            if (
-                len(arguments) == len(set(arguments))
-                and set(arguments).issubset(allowed)
-            ):
-                _show_packages_assessment(
-                    include_cve="--cve" in arguments,
-                    detailed="--details" in arguments,
-                )
-            else:
-                print("Usage: scan packages [--cve] [--details]")
-            return True
 
-        if parts == ["scan", "host"]:
-            _show_host_assessment("HOST DETAILS")
-            return True
-        if parts == ["scan", "host", "--details"]:
-            _show_host_assessment("HOST DETAILS", details=True)
-            return True
-        if parts in (["scan", "hardening"], ["scan", "hardening", "--details"]):
-            _render_result(_run_hardening_result(details=len(parts) == 3), details=len(parts) == 3)
-            return True
-        if parts in (["scan", "network"], ["scan", "network", "--details"]):
-            _render_result(_run_network_result(details=len(parts) == 3), details=len(parts) == 3)
-            return True
-        if parts in (["scan", "users"], ["scan", "users", "--details"]):
-            detailed = len(parts) == 3
-            _show_users_assessment(detailed=detailed)
-            return True
-        if parts == ["scan", "service"]:
-            _show_service_assessment()
-            return True
-        if parts == ["scan", "service", "--details"]:
-            _show_service_assessment(detailed=True)
-            return True
-        if parts == ["scan", "ssh"]:
-            _show_ssh_assessment()
-            return True
-        if parts == ["scan", "ssh", "--details"]:
-            _show_ssh_assessment(detailed=True)
-            return True
-        if parts == ["scan", "filesystem"]:
-            _show_filesystem_assessment()
-            return True
-        if parts == ["scan", "filesystem", "--details"]:
-            _show_filesystem_assessment(detailed=True)
-            return True
-        if len(parts) > 1:
-            print("Usage: scan [--details] | scan --cve [--details] | host [--details] | hardening [--details] | users [--details] | service [--details] | ssh [--details] | filesystem [--details] | network [--details] | packages [--cve] [--details]")
+            if len(arguments) > 1 or any(
+                argument != "--details" for argument in arguments
+            ):
+                print(usage)
+                return True
+
+            detailed = bool(arguments)
+
+            if area == "host":
+                if detailed:
+                    _show_host_assessment("HOST DETAILS", details=True)
+                else:
+                    _show_host_assessment("HOST DETAILS")
+            elif area == "hardening":
+                _render_result(
+                    _run_hardening_result(details=detailed),
+                    details=detailed,
+                )
+            elif area == "network":
+                _render_result(
+                    _run_network_result(details=detailed),
+                    details=detailed,
+                )
+            elif area == "users":
+                _show_users_assessment(detailed=detailed)
+            elif area == "service":
+                if detailed:
+                    _show_service_assessment(detailed=True)
+                else:
+                    _show_service_assessment()
+            elif area == "ssh":
+                if detailed:
+                    _show_ssh_assessment(detailed=True)
+                else:
+                    _show_ssh_assessment()
+            elif area == "filesystem":
+                if detailed:
+                    _show_filesystem_assessment(detailed=True)
+                else:
+                    _show_filesystem_assessment()
+            elif area == "packages":
+                if detailed:
+                    _show_packages_assessment(detailed=True)
+                else:
+                    _show_packages_assessment()
+            else:
+                print(usage)
             return True
 
     command = _COMMANDS_BY_NAME.get(command_name)
@@ -1988,7 +2084,6 @@ def _dispatch_command(command_name: str) -> bool:
 
     command.handler()
     return True
-
 
 class _TerminalCapture(io.StringIO):
     """Capture printed output while preserving terminal-aware styling."""
@@ -2016,12 +2111,26 @@ def _append_output(lines: list[str], output: str) -> None:
         lines.extend(output.splitlines())
 
 
-def _fit_output_to_width(lines: list[str], width: int) -> list[str]:
-    """Reflow captured output to the current terminal width."""
+def _fit_output_to_width(
+    lines: list[str],
+    width: int,
+    *,
+    reserve_mascot: bool | None = None,
+) -> list[str]:
+    """Reflow shell text, optionally reserving space for the mascot panel."""
     global _OUTPUT_LAYOUT_CACHE
     width = max(width, 1)
+
+    if reserve_mascot is None:
+        _, rows = terminal_size()
+        reserve_mascot = _mascot_visible(width, rows)
+
+    if reserve_mascot:
+        width = min(width, _mascot_content_width(width))
+
     last_line = lines[-1] if lines else ""
     cache_key = (id(lines), width, len(lines), last_line)
+
     if _OUTPUT_LAYOUT_CACHE is not None:
         cached_id, cached_width, cached_count, cached_last, cached_lines = (
             _OUTPUT_LAYOUT_CACHE
@@ -2031,21 +2140,47 @@ def _fit_output_to_width(lines: list[str], width: int) -> list[str]:
 
     fitted: list[str] = []
     for line in lines:
+        if _WELCOME_TABLE_MARKER_PREFIX in line:
+            marker_start = line.index(_WELCOME_TABLE_MARKER_PREFIX)
+            marker_end = line.find(
+                _WELCOME_TABLE_MARKER_END,
+                marker_start + len(_WELCOME_TABLE_MARKER_PREFIX),
+            )
+            if marker_end >= 0:
+                raw_width = line[
+                    marker_start + len(_WELCOME_TABLE_MARKER_PREFIX):marker_end
+                ]
+                content = line[:marker_start]
+                marker = line[marker_start:marker_end + len(_WELCOME_TABLE_MARKER_END)]
+                try:
+                    table_width = int(raw_width)
+                except ValueError:
+                    table_width = 0
+
+                if table_width > 0 and len(_PRESENTATION_INDENT) + table_width <= width:
+                    fitted.append(content + marker)
+                else:
+                    # When the terminal is too narrow, drop the right-edge
+                    # marker and let normal wrapping handle the text.
+                    fitted.extend(wrap_text(content.rstrip(), width=width))
+                continue
         if not line:
             fitted.append("")
             continue
+
         if "\033[" in line:
             fitted.append(clip_ansi_line(line, width))
             continue
 
-        leading = line[: len(line) - len(line.lstrip())]
-        content = line[len(leading) :]
+        leading = line[:len(line) - len(line.lstrip())]
+        content = line[len(leading):]
         label_end = content.find(": ")
+
         if label_end >= 0:
-            first_prefix = leading + content[: label_end + 2]
+            first_prefix = leading + content[:label_end + 2]
             if display_width(first_prefix) < width // 2:
                 wrapped = wrap_text(
-                    content[label_end + 2 :],
+                    content[label_end + 2:],
                     initial_indent=first_prefix,
                     subsequent_indent=" " * display_width(first_prefix),
                     width=width,
@@ -2060,6 +2195,7 @@ def _fit_output_to_width(lines: list[str], width: int) -> list[str]:
             width=width,
         )
         fitted.extend(clip_ansi_line(part, width) for part in wrapped)
+
     _OUTPUT_LAYOUT_CACHE = (*cache_key, fitted)
     return fitted
 
@@ -2094,17 +2230,26 @@ def _render_shell(
     suggestions: tuple[str, ...] = (),
     selection: MouseTextSelection | None = None,
 ) -> None:
+    """Render scrollable shell output with a persistent right-hand mascot."""
     columns, rows = terminal_size()
     rows = max(rows, 1)
-    visible_suggestions = suggestions[: max(rows - 2, 0)]
+    mascot_visible = _mascot_visible(columns, rows)
+
+    visible_suggestions = suggestions[:max(rows - 2, 0)]
     page_height = max(rows - 1 - len(visible_suggestions), 0)
-    display_lines = _fit_output_to_width(lines, columns)
+    display_lines = _fit_output_to_width(
+        lines, columns, reserve_mascot=mascot_visible
+    )
     visible_end = max(0, len(display_lines) - scroll_offset)
     visible_start = max(0, visible_end - page_height)
     visible_lines = display_lines[visible_start:visible_end]
+
     if selection is not None:
         highlighted_lines: list[str] = []
         for index, line in enumerate(visible_lines, start=visible_start):
+            if _WELCOME_TABLE_MARKER_PREFIX in line:
+                highlighted_lines.append(line)
+                continue
             selected_range = selection.column_range(index)
             if selected_range is None:
                 highlighted_lines.append(line)
@@ -2120,17 +2265,90 @@ def _render_shell(
     prompt = clip_ansi_line(prompt, columns)
     prompt_width = min(len("vulpnix> "), columns)
     frame = visible_lines[:]
-    displayed_command = clip_ansi_line(command_line, max(columns - prompt_width, 0))
+    displayed_command = clip_ansi_line(
+        command_line, max(columns - prompt_width, 0)
+    )
     prompt_row = min(len(frame), rows - 1)
     frame.insert(prompt_row, prompt + displayed_command)
     frame.extend("" for _ in range(rows - len(frame) - len(visible_suggestions)))
     frame.extend(clip_ansi_line(line, columns) for line in visible_suggestions)
 
+    welcome_border_rows: list[tuple[int, int]] = []
     output = ["\033[H"]
     for row_number, line in enumerate(frame[:rows]):
+        if _WELCOME_TABLE_MARKER_PREFIX in line:
+            marker_start = line.index(_WELCOME_TABLE_MARKER_PREFIX)
+            marker_end = line.find(
+                _WELCOME_TABLE_MARKER_END,
+                marker_start + len(_WELCOME_TABLE_MARKER_PREFIX),
+            )
+            if marker_end >= 0:
+                raw_width = line[
+                    marker_start + len(_WELCOME_TABLE_MARKER_PREFIX):marker_end
+                ]
+                try:
+                    table_width = int(raw_width)
+                except ValueError:
+                    table_width = 0
+
+                line = (
+                    line[:marker_start]
+                    + line[marker_end + len(_WELCOME_TABLE_MARKER_END):]
+                )
+                right_column = len(_PRESENTATION_INDENT) + table_width - 1
+                if table_width > 0 and 0 <= right_column < columns:
+                    welcome_border_rows.append((row_number, right_column))
+
         output.extend((line, "\033[K"))
         if row_number < rows - 1:
             output.append("\r\n")
+
+    # Draw only the fixed right edge. The text rows contain no trailing │.
+    for row_number, right_column in welcome_border_rows:
+        output.append(f"\033[{row_number + 1};{right_column + 1}H")
+        output.append("│")
+
+    if mascot_visible:
+        image_column = _mascot_image_column(columns)
+        frame_left = image_column - 2
+        frame_width = MASCOT_COLUMNS + 4
+        top_label = " ✦ VULPNIX ✦ "
+        bottom_label = " LOOK CLOSER · STAY CURIOUS "
+        tagline_row = _MASCOT_TOP_ROW + MASCOT_ROWS
+        bottom_row = tagline_row + 1
+
+        def mascot_border(label: str, first: str, last: str) -> str:
+            available = max(0, frame_width - 2 - display_width(label))
+            left_fill = available // 2
+            right_fill = available - left_fill
+            return (
+                first
+                + "─" * left_fill
+                + label
+                + "─" * right_fill
+                + last
+            )
+
+        top_border = mascot_border(top_label, "╭", "╮")
+        bottom_border = mascot_border(bottom_label, "╰", "╯")
+
+        output.append(f"\033[1;{frame_left + 1}H")
+        output.append(accent(top_border, bold=True))
+
+        for row_number in range(2, bottom_row):
+            output.append(f"\033[{row_number};{frame_left + 1}H")
+            output.append(accent("│"))
+            output.append(f"\033[{row_number};{frame_left + frame_width}H")
+            output.append(accent("│"))
+
+        output.append(f"\033[{bottom_row};{frame_left + 1}H")
+        output.append(accent(bottom_border, bold=True))
+        output.append(f"\033[{_MASCOT_TOP_ROW};{image_column + 1}H")
+        output.append(
+            placement_command(columns=MASCOT_COLUMNS, rows=MASCOT_ROWS)
+        )
+    elif _MASCOT_SESSION_ENABLED:
+        output.append(delete_placement_command())
 
     prompt_column = min(prompt_width + cursor + 1, max(columns, 1))
     output.append(f"\033[{prompt_row + 1};{prompt_column}H")
@@ -2320,12 +2538,36 @@ def _read_command(
 
 
 def _run_interactive_shell() -> None:
-    global _LIVE_PROGRESS
+    global _LIVE_PROGRESS, _MASCOT_SESSION_ENABLED
     _LIVE_PROGRESS = True
+    _MASCOT_SESSION_ENABLED = False
     output_lines: list[str] = []
     history: list[str] = []
-    _, presentation = _capture_output(_show_presentation)
+
+    columns, rows = terminal_size()
+    if (
+        columns >= MASCOT_MIN_TERMINAL_WIDTH
+        and rows >= MASCOT_MIN_TERMINAL_HEIGHT
+        and kitty_graphics_supported()
+    ):
+        _MASCOT_SESSION_ENABLED = transmit_png(mascot_image_path(), sys.stdout)
+
+    _, presentation = _capture_output(
+        lambda: _show_presentation(
+            kitty_mascot=_mascot_visible(columns, rows)
+        )
+    )
     _append_output(output_lines, presentation)
+
+    def cleanup_mascot() -> None:
+        global _MASCOT_SESSION_ENABLED
+        if _MASCOT_SESSION_ENABLED:
+            try:
+                sys.stdout.write(delete_placement_command())
+                sys.stdout.flush()
+            except OSError:
+                pass
+        _MASCOT_SESSION_ENABLED = False
 
     with raw_input_mode():
         while True:
@@ -2334,6 +2576,7 @@ def _run_interactive_shell() -> None:
             except (EOFError, KeyboardInterrupt):
                 _append_output(output_lines, "\nExiting Vulpnix.\n")
                 _render_shell(output_lines, "", 0, 0)
+                cleanup_mascot()
                 _LIVE_PROGRESS = False
                 return
 
@@ -2342,10 +2585,13 @@ def _run_interactive_shell() -> None:
             if command:
                 history.append(command)
 
-            keep_running, output = _capture_output(lambda: _dispatch_command(command))
+            keep_running, output = _capture_output(
+                lambda: _dispatch_command(command)
+            )
             _append_output(output_lines, output)
             if not keep_running:
                 _render_shell(output_lines, "", 0, 0)
+                cleanup_mascot()
                 _LIVE_PROGRESS = False
                 return
 

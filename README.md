@@ -120,8 +120,6 @@ help
 info
 version
 scan [--details]
-scan --cve [--details]
-scan packages [--cve] [--details]
 scan host [--details]
 scan hardening [--details]
 scan network [--details]
@@ -129,22 +127,32 @@ scan users [--details]
 scan service [--details]
 scan ssh [--details]
 scan filesystem [--details]
+scan packages [--details]
 clear
 exit
 ```
 
-The terminal output currently presents an overview, findings, assessment sections,
-and a final result. The presentation is still being refined; the reporting milestone
-will consolidate section outcomes into a clearer, action-oriented final review.
-`--details` expands available evidence and inventories without changing the security rules.
+`scan` runs the full implemented assessment, including package inventory and
+CVE/advisory correlation. `scan packages` runs the package inventory and
+vulnerability audit on their own. Remote advisory checks require network access.
+Unavailable sources and unsupported ecosystems must be reported as incomplete
+or unassessed, never as proof that installed packages are secure.
+
+The terminal output presents an overview, findings, assessment sections, and a
+final result. The reporting milestone will consolidate section outcomes into
+a clearer, action-oriented final review. `--details` expands available evidence
+and inventories without changing the security rules.
 
 ### What the checks do
 
-- **`scan`** runs the currently implemented full assessment: host facts, service
-  inventory, local accounts and privileges, filesystem metadata and bounded
-  SUID/SGID discovery, global SSH configuration, selected kernel-hardening
-  parameters, local listening/bound sockets, SSH host-key metadata, and
-  systemd unit/drop-in metadata.
+- **`scan`** runs the currently implemented full assessment: host facts,
+  service inventory, local accounts and privileges, filesystem metadata and
+  bounded SUID/SGID discovery, global SSH configuration, selected
+  kernel-hardening parameters, local listening/bound sockets, SSH host-key
+  metadata, systemd unit/drop-in metadata, and package inventory with
+  vulnerability advisory correlation. Remote package checks may be incomplete
+  if an advisory source or network connection is unavailable.
+
 - **`scan host`** reports hostname, distribution, kernel, architecture, and
   uptime. `scan host --details` also includes selected kernel-hardening checks.
 - **`scan hardening`** reads a fixed allow-list of kernel `sysctl` parameters in
@@ -179,20 +187,15 @@ will consolidate section outcomes into a clearer, action-oriented final review.
   mount options that permit execution.
 
 - **`scan packages`** collects locally installed package metadata using
-  the detected native package manager. This inventory-only operation does not
-  query remote vulnerability sources.
-- **`scan packages --cve`** collects the inventory and queries supported
-  advisory sources. This operation requires network access. Add `--details` to
-  show expanded package and finding information.
-- **`scan --cve`** runs the full host assessment and adds the package CVE
-  correlation. The same `--details` option expands the report. Command
-  consolidation is planned for the reporting milestone; see `PLANS.md`.
-
-Package inventory and vulnerability correlation are separate concepts. A
-successful inventory does not establish that the installed packages are free
-from vulnerabilities. Unsupported ecosystems, stale advisories, missing
-version information, or inconclusive version comparisons must remain
-unassessed or require review rather than being reported as secure.
+  the detected native package manager and correlates installed versions with
+  supported remote distribution-aware vulnerability advisory sources.
+  Inventory and the CVE/advisory audit run together by default. Network access
+  is required for remote source queries.
+- Package inventory and vulnerability correlation are separate concepts. A
+  successful inventory does not establish that installed packages are free
+  from vulnerabilities. Unsupported ecosystems, unavailable or stale
+  advisories, missing version information, and inconclusive version comparisons
+  must remain unassessed or require review rather than being reported as secure.
 
 ## Result semantics
 

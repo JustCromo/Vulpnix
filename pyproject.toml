@@ -15,3 +15,6 @@ vulpnix = "vulpnix.cli.app:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.package-data]
+"vulpnix.cli" = ["assets/*.png"]

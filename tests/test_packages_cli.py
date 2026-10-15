@@ -21,25 +21,34 @@ class PackageCliTests(unittest.TestCase):
             status="OK",
         )
 
-    def test_package_inventory_does_not_contact_cve_source_by_default(self):
+
+    def test_package_scan_runs_inventory_and_cve_audit_by_default(self):
         output = io.StringIO()
+        audit_result = PackageAudit(
+            source="Test advisory source",
+            status="OK",
+            packages_checked=1,
+        )
+
         with (
-            patch.object(app, "collect_package_inventory", return_value=self.inventory()),
-            patch.object(app, "collect_package_audit") as audit,
+            patch.object(
+                app, "collect_package_inventory", return_value=self.inventory()
+            ),
+            patch.object(
+                app, "collect_package_audit", return_value=audit_result
+            ) as audit,
             redirect_stdout(output),
         ):
             app._dispatch_command("scan packages")
 
-        audit.assert_not_called()
+        audit.assert_called_once()
         report = output.getvalue()
         self.assertIn("SOFTWARE INVENTORY", report)
+        self.assertIn("PACKAGE VULNERABILITY AUDIT", report)
         self.assertIn("demo", report)
         self.assertIn("dpkg-query", report)
-        self.assertNotIn("PACKAGE VULNERABILITY AUDIT", report)
-        self.assertIn("REVIEW REQUIRED", report)
-        self.assertNotIn("NO VERIFIED ISSUES", report)
 
-    def test_package_cve_command_renders_finding_and_risk(self):
+    def test_package_scan_renders_finding_and_risk(self):
         finding = Finding(
             rule_id="PACKAGE-CVE-CVE-2025-12345-DEMO",
             title="demo 1.0-1 affected by CVE-2025-12345",
@@ -65,7 +74,7 @@ class PackageCliTests(unittest.TestCase):
             patch.object(app, "collect_package_audit", return_value=audit_result),
             redirect_stdout(output),
         ):
-            app._dispatch_command("scan packages --cve")
+            app._dispatch_command("scan packages")
 
         report = output.getvalue()
         self.assertIn("PACKAGE VULNERABILITY AUDIT", report)
@@ -78,22 +87,37 @@ class PackageCliTests(unittest.TestCase):
         )
         self.assertIn("HIGH", report)
 
-    def test_full_scan_cve_flag_enables_package_audit(self):
-        with patch.object(app, "_show_scan") as scan:
-            app._dispatch_command("scan --cve")
-        scan.assert_called_once_with(detailed=False, include_cve=True)
 
-    def test_full_scan_cve_details_flag_is_forwarded(self):
+    def test_full_scan_runs_without_cve_flag(self):
         with patch.object(app, "_show_scan") as scan:
-            app._dispatch_command("scan --cve --details")
-        scan.assert_called_once_with(detailed=True, include_cve=True)
+            app._dispatch_command("scan")
+        scan.assert_called_once_with(detailed=False)
+
+    def test_full_scan_details_flag_is_forwarded(self):
+        with patch.object(app, "_show_scan") as scan:
+            app._dispatch_command("scan --details")
+        scan.assert_called_once_with(detailed=True)
+
+    def test_removed_cve_flags_are_rejected(self):
+        for command in ("scan --cve", "scan packages --cve"):
+            with self.subTest(command=command):
+                output = io.StringIO()
+                with (
+                    patch.object(app, "_show_scan") as scan,
+                    patch.object(app, "_show_packages_assessment") as packages,
+                    redirect_stdout(output),
+                ):
+                    app._dispatch_command(command)
+
+                self.assertIn("Usage: scan", output.getvalue())
+                scan.assert_not_called()
+                packages.assert_not_called()
 
     def test_package_commands_are_available_in_completion(self):
         completions = app._command_completions("scan packages")
         self.assertIn("scan packages", completions)
-        self.assertIn("scan packages --cve", completions)
         self.assertIn("scan packages --details", completions)
-
+        self.assertFalse(any("--cve" in command for command in completions))
 
 if __name__ == "__main__":
     unittest.main()

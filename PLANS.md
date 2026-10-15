@@ -182,8 +182,11 @@ Implemented:
   in the current code: Debian, Ubuntu, Alpine, AlmaLinux, and Rocky Linux.
 - Explicitly unsupported or unmapped ecosystems remain unavailable or
   unassessed; the code does not guess an OSV ecosystem merely from `rpm`.
-- Remote advisory queries are opt-in through the CLI `--cve` options. The local
-  package inventory command does not require network access.
+- Remote advisory correlation runs by default for `scan packages` and is
+  included in `scan`. These checks query supported remote sources and require
+  network access. Unavailable sources or unsupported ecosystems must remain
+  incomplete or unassessed rather than being treated as secure.
+
 - Evidence records identify the installed package/version, advisory source,
   source status, available affected/fixed versions, and the reason for `FAIL`
   or `REVIEW`.
