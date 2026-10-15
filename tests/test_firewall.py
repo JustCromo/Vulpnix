@@ -176,6 +176,101 @@ class FirewallCollectorTests(unittest.TestCase):
         self.assertTrue(snapshot.review)
 
 
+    def test_nft_execution_errors_and_timeouts_are_not_reported_as_empty(self):
+        command = ["/usr/sbin/nft", "-j", "list", "ruleset"]
+        errors = (
+            OSError("simulated execution failure"),
+            subprocess.TimeoutExpired(command, timeout=8),
+        )
+
+        for error in errors:
+            with self.subTest(error=type(error).__name__):
+                with (
+                    patch(
+                        "shutil.which",
+                        side_effect=lambda name, path=None: (
+                            "/usr/sbin/nft" if name == "nft" else None
+                        ),
+                    ),
+                    patch("subprocess.run", side_effect=error),
+                ):
+                    snapshot = firewall.collect_firewall_snapshot()
+
+                self.assertEqual(len(snapshot.observations), 1)
+                observation = snapshot.observations[0]
+                self.assertEqual(observation.state, "NOT_ASSESSED")
+                self.assertTrue(observation.review)
+                self.assertNotEqual(observation.state, "EMPTY")
+
+    def test_iptables_nonzero_exit_is_not_reported_as_empty(self):
+        failed = subprocess.CompletedProcess(
+            ["/usr/sbin/iptables-save"],
+            1,
+            "",
+            "Operation not permitted",
+        )
+
+        with (
+            patch(
+                "shutil.which",
+                side_effect=lambda name, path=None: (
+                    "/usr/sbin/iptables-save"
+                    if name == "iptables-save"
+                    else None
+                ),
+            ),
+            patch("subprocess.run", return_value=failed),
+        ):
+            snapshot = firewall.collect_firewall_snapshot()
+
+        self.assertEqual(len(snapshot.observations), 1)
+        observation = snapshot.observations[0]
+        self.assertEqual(observation.implementation, "iptables")
+        self.assertEqual(observation.state, "NOT_ASSESSED")
+        self.assertTrue(observation.review)
+
+    def test_failed_nft_collection_does_not_hide_iptables_results(self):
+        iptables_output = """*filter
+:INPUT DROP [0:0]
+:FORWARD DROP [0:0]
+:OUTPUT ACCEPT [0:0]
+COMMIT
+"""
+
+        def available_tool(name, path=None):
+            return {
+                "nft": "/usr/sbin/nft",
+                "iptables-save": "/usr/sbin/iptables-save",
+            }.get(name)
+
+        def run_command(command, **kwargs):
+            if command[0] == "/usr/sbin/nft":
+                return subprocess.CompletedProcess(
+                    command, 1, "", "Operation not permitted"
+                )
+
+            return subprocess.CompletedProcess(
+                command, 0, iptables_output, ""
+            )
+
+        with (
+            patch("shutil.which", side_effect=available_tool),
+            patch("subprocess.run", side_effect=run_command),
+        ):
+            snapshot = firewall.collect_firewall_snapshot()
+
+        self.assertEqual(
+            [item.implementation for item in snapshot.observations],
+            ["nftables", "iptables"],
+        )
+        self.assertEqual(
+            [item.state for item in snapshot.observations],
+            ["NOT_ASSESSED", "CONFIGURED"],
+        )
+        self.assertTrue(snapshot.review)
+        self.assertTrue(snapshot.observations[1].chains)
+
+
 class FirewallRuleMetadataTests(unittest.TestCase):
     def test_iptables_preserves_rule_order_and_conditionality(self):
         output = """*filter
