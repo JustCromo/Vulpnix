@@ -79,7 +79,16 @@ def _wrap(value: str, width: int, *, indent: str = "") -> list[str]:
 def _overview(report: ScanReport, width: int) -> list[str]:
     host = report.host
     if host is None:
-        identity = report.host_message or "Host facts unavailable."
+        if report.host_message:
+            identity = report.host_message
+        elif any(
+            section.title in {"SYSTEM", "HOST", "HOST DETAILS"}
+            for section in report.sections
+        ):
+            # Host data was expected but was not collected successfully.
+            identity = "Host facts unavailable."
+        else:
+            identity = "Host facts not collected for this scan."
     else:
         identity = " · ".join(
             (

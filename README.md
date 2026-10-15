@@ -150,10 +150,14 @@ inventories where available; it does not change the security rules.
 - **`scan network`** inventories listening TCP and bound UDP sockets, their
   address/port and bind scope, and process attribution where available. It uses
   `ss` when usable and falls back to `/proc/net` when possible. It also inventories
-  network interfaces and addresses, and inspects supported firewall ruleset
-  sources in read-only mode. These inventories do not prove internet reachability
-  or effective firewall protection; complete firewall-policy validation remains
-  future work.
+  network interfaces and addresses, collects supported firewall rulesets in
+  read-only mode, and performs a preliminary, conservative analysis of supported
+  firewall input and forwarding policies. Findings that cannot be assessed
+  reliably are reported as `REVIEW`, not as confirmed vulnerabilities. A
+  permissive forwarding policy alone does not prove that IP forwarding is enabled,
+  that a route exists, or that traffic is reachable from the internet. The
+  analyzer does not yet fully resolve interactions between firewall chains, hooks,
+  and backends.
 - **`scan service`** summarizes service state and startup enablement.
   `scan service --details` additionally checks metadata for systemd unit
   fragments and drop-ins. File contents are not read.
@@ -278,8 +282,8 @@ release claims are made.
 ## Roadmap
 
 See [PLANS.md](PLANS.md). Network socket visibility, interface inventory,
-firewall ruleset collection, selected kernel hardening, SSH host-key metadata,
-systemd unit metadata, and qualitative per-finding risk scoring are implemented.
-Effective firewall-policy validation, package/CVE correlation, baseline/change
-detection, host-wide risk aggregation, and additional report formats remain
-planned work.
+read-only firewall ruleset collection with preliminary policy analysis, selected
+kernel hardening, SSH host-key metadata, systemd unit metadata, and qualitative
+per-finding risk scoring are implemented. Comprehensive firewall-policy
+validation, package/CVE correlation, baseline/change detection, host-wide risk
+aggregation, and additional report formats remain planned work.

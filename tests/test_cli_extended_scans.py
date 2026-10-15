@@ -90,6 +90,11 @@ class ExtendedScanCommandTests(unittest.TestCase):
         self.assertIn("NETWORK INTERFACES", compact.getvalue())
         self.assertIn("FIREWALL CONFIGURATION", compact.getvalue())
         self.assertIn("FIREWALL POLICY ANALYSIS", compact.getvalue())
+        self.assertIn("Host facts not collected for this scan.", compact.getvalue())
+        self.assertIn(
+            "firewall input and forwarding policy analysis",
+            compact.getvalue(),
+        )
         self.assertIn("Assessment results:", compact.getvalue())
         self.assertNotIn("Input-policy observations:", compact.getvalue())
         self.assertIn(
@@ -199,6 +204,7 @@ class ExtendedScanCommandTests(unittest.TestCase):
         self.assertIn("SYSTEM", output.getvalue())
         self.assertIn("NOT_ASSESSED", output.getvalue())
         self.assertIn("could not be collected reliably", output.getvalue())
+        self.assertIn("Host: Host facts unavailable.", output.getvalue())
         self.assertIn("FINAL RESULT", output.getvalue())
 
     def test_rootless_incomplete_scan_explicitly_recommends_elevation(self):

@@ -118,6 +118,14 @@ class FirewallPolicyAssessmentTests(unittest.TestCase):
         self.assertIs(finding.status, FindingStatus.REVIEW)
         self.assertIn("hook=forward", finding.evidence)
         self.assertIn("policy=ACCEPT", finding.evidence)
+        self.assertIn(
+            "review support for the detected chain layout",
+            finding.recommendation,
+        )
+        self.assertNotIn(
+            "rerun the assessment with sufficient permissions",
+            finding.recommendation,
+        )
 
         forward_finding = by_id["FIREWALL-FORWARD-POLICY-001"]
         self.assertIs(forward_finding.status, FindingStatus.REVIEW)

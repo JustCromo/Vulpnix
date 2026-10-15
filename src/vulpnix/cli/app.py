@@ -693,7 +693,7 @@ def _run_network_result(*, details: bool = False):
                 "firewall configuration",
                 "IPv4 firewall rules",
                 "IPv6 firewall rules",
-                "firewall input policy analysis",
+                "firewall input and forwarding policy analysis",
             ),
             # Policy evaluation is intentionally partial until chain jumps,
             # all hooks, and active backend interactions are fully resolved.
@@ -720,7 +720,7 @@ def _run_network_result(*, details: bool = False):
                 "firewall configuration",
                 "IPv4 firewall rules",
                 "IPv6 firewall rules",
-                "firewall input policy analysis",
+                "firewall input and forwarding policy analysis",
             ),
             coverage=AssessmentCoverage.PARTIAL,
             review_items=1,

@@ -216,8 +216,12 @@ def assess_firewall_policy(
                     ),
                     recommendation=(
                         "Verify which firewall backend and input hooks are "
-                        "active, then rerun the assessment with sufficient "
-                        "permissions."
+                        "active, and confirm whether the collected rulesets "
+                        "expose the applicable input filter chain. If rule "
+                        "collection is incomplete or lacks permissions, "
+                        "resolve that limitation; otherwise, review support "
+                        "for the detected chain layout before drawing a "
+                        "conclusion."
                     ),
                 )
             )
