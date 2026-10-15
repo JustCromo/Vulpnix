@@ -76,7 +76,7 @@ class FirewallPolicyAssessmentTests(unittest.TestCase):
         )
         self.assertIs(assessment.findings[0].status, FindingStatus.REVIEW)
 
-    def test_unconditional_fallback_drop_avoids_permissive_finding(self):
+    def test_conditional_accept_before_unconditional_drop_remains_reviewed(self):
         chain = input_chain(
             policy="ACCEPT",
             rules=(
@@ -85,8 +85,13 @@ class FirewallPolicyAssessmentTests(unittest.TestCase):
             ),
         )
         assessment = assess_firewall_policy(snapshot_for(chain))
-        self.assertEqual(assessment.findings, ())
-        self.assertIn("unconditional DROP", assessment.checks[0])
+        finding_ids = {finding.rule_id for finding in assessment.findings}
+
+        self.assertIn("FIREWALL-INPUT-ACCEPT-001", finding_ids)
+        self.assertNotIn("FIREWALL-INPUT-POLICY-001", finding_ids)
+        self.assertTrue(
+            any("unconditional DROP" in check for check in assessment.checks)
+        )
 
     def test_ignores_non_filter_and_non_input_chains(self):
         chains = (
@@ -182,7 +187,7 @@ class FirewallForwardPolicyTests(unittest.TestCase):
         self.assertIn("guest_cross", forward.evidence)
         self.assertIn("default policy ACCEPT", forward.evidence)
 
-    def test_forward_does_not_treat_verdict_after_jump_as_direct_fallback(self):
+    def test_forward_reports_nested_accept_when_base_policy_is_unreachable(self):
         forward = input_chain(
             name="forward",
             hook="forward",
@@ -202,14 +207,18 @@ class FirewallForwardPolicyTests(unittest.TestCase):
         assessment = assess_firewall_policy(
             snapshot_for(forward, guest_input)
         )
-        finding = next(
-            item for item in assessment.findings
-            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
-        )
+        by_id = {finding.rule_id: finding for finding in assessment.findings}
 
-        self.assertIn("default policy ACCEPT", finding.evidence)
-        self.assertNotIn("unconditional DROP at rule 2", finding.evidence)
-        self.assertIn("guest_input", finding.evidence)
+        finding = by_id["FIREWALL-FORWARD-ACCEPT-001"]
+        self.assertIs(finding.status, FindingStatus.REVIEW)
+        self.assertIn("Bounded control-flow outcomes: ACCEPT", finding.evidence)
+        self.assertNotIn("FIREWALL-FORWARD-POLICY-001", by_id)
+        self.assertTrue(
+            any(
+                "default policy ACCEPT was not reachable" in check
+                for check in assessment.checks
+            )
+        )
 
     def test_forward_does_not_misclassify_accept_after_jump(self):
         forward = input_chain(
@@ -298,14 +307,21 @@ class FirewallForwardPolicyTests(unittest.TestCase):
         assessment = assess_firewall_policy(
             snapshot_for(forward, guest_input, guest_services)
         )
-        finding = next(
-            item for item in assessment.findings
-            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        finding_ids = {item.rule_id for item in assessment.findings}
+
+        self.assertNotIn("FIREWALL-FORWARD-POLICY-001", finding_ids)
+
+        observation = next(
+            check
+            for check in assessment.checks
+            if check.startswith("POLICY OBSERVED · ")
+            and "default policy ACCEPT was not reachable" in check
         )
 
-        self.assertIn("guest_services", finding.evidence)
-        self.assertIn("rule 1=DROP (unconditional)", finding.evidence)
-        self.assertIn("jump ->", finding.evidence)
+        self.assertIn("guest_services", observation)
+        self.assertIn("rule 1=DROP (unconditional)", observation)
+        self.assertIn("jump ->", observation)
+        self.assertIn("Bounded control-flow outcomes: DROP", observation)
 
     def test_forward_review_reports_circular_chain_reference(self):
         forward = input_chain(
@@ -432,6 +448,181 @@ class FirewallForwardPolicyTests(unittest.TestCase):
             )
         )
 
+
+    def test_forward_unreachable_accept_policy_is_only_an_observation(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(FirewallRule(1, "JUMP", True, "guest_drop"),),
+        )
+        guest_drop = input_chain(
+            name="guest_drop",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "DROP", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_drop)
+        )
+        finding_ids = {finding.rule_id for finding in assessment.findings}
+
+        self.assertNotIn("FIREWALL-FORWARD-POLICY-001", finding_ids)
+        self.assertTrue(
+            any(
+                "default policy ACCEPT was not reachable" in check
+                for check in assessment.checks
+            )
+        )
+
+    def test_nested_accept_is_reviewed_under_drop_policy(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="DROP",
+            rules=(FirewallRule(1, "JUMP", True, "guest_accept"),),
+        )
+        guest_accept = input_chain(
+            name="guest_accept",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "ACCEPT", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_accept)
+        )
+        by_id = {finding.rule_id: finding for finding in assessment.findings}
+
+        self.assertIn("FIREWALL-FORWARD-ACCEPT-001", by_id)
+        self.assertIs(
+            by_id["FIREWALL-FORWARD-ACCEPT-001"].status,
+            FindingStatus.REVIEW,
+        )
+        self.assertIn(
+            "Bounded control-flow outcomes: ACCEPT",
+            by_id["FIREWALL-FORWARD-ACCEPT-001"].evidence,
+        )
+
+    def test_goto_skips_calling_chain_rules_after_goto(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="DROP",
+            rules=(FirewallRule(1, "JUMP", True, "outer"),),
+        )
+        outer = input_chain(
+            name="outer",
+            hook=None,
+            policy=None,
+            rules=(
+                FirewallRule(1, "GOTO", True, "inner"),
+                FirewallRule(2, "ACCEPT", True),
+            ),
+        )
+        inner = input_chain(
+            name="inner",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "RETURN", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, outer, inner)
+        )
+        finding_ids = {finding.rule_id for finding in assessment.findings}
+
+        self.assertNotIn("FIREWALL-FORWARD-ACCEPT-001", finding_ids)
+        self.assertTrue(
+            any("default policy DROP denies" in check for check in assessment.checks)
+        )
+
+    def test_jump_return_resumes_callers_next_rule(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="DROP",
+            rules=(
+                FirewallRule(1, "JUMP", True, "guest_return"),
+                FirewallRule(2, "ACCEPT", True),
+            ),
+        )
+        guest_return = input_chain(
+            name="guest_return",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "RETURN", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_return)
+        )
+        by_id = {finding.rule_id: finding for finding in assessment.findings}
+
+        self.assertIn("FIREWALL-FORWARD-ACCEPT-001", by_id)
+        self.assertIn(
+            "Bounded control-flow outcomes: ACCEPT",
+            by_id["FIREWALL-FORWARD-ACCEPT-001"].evidence,
+        )
+
+    def test_conditional_jump_keeps_match_and_nonmatch_paths(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(FirewallRule(1, "JUMP", False, "guest_drop"),),
+        )
+        guest_drop = input_chain(
+            name="guest_drop",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "DROP", True),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, guest_drop)
+        )
+        finding = next(
+            item
+            for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIn("DROP", finding.evidence)
+        self.assertIn("POLICY_ACCEPT", finding.evidence)
+
+    def test_cyclic_control_flow_remains_unresolved_and_reviewable(self):
+        forward = input_chain(
+            name="forward",
+            hook="forward",
+            policy="ACCEPT",
+            rules=(FirewallRule(1, "JUMP", True, "chain_a"),),
+        )
+        chain_a = input_chain(
+            name="chain_a",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "JUMP", True, "chain_b"),),
+        )
+        chain_b = input_chain(
+            name="chain_b",
+            hook=None,
+            policy=None,
+            rules=(FirewallRule(1, "GOTO", True, "chain_a"),),
+        )
+
+        assessment = assess_firewall_policy(
+            snapshot_for(forward, chain_a, chain_b)
+        )
+        finding = next(
+            item
+            for item in assessment.findings
+            if item.rule_id == "FIREWALL-FORWARD-POLICY-001"
+        )
+
+        self.assertIs(finding.status, FindingStatus.REVIEW)
+        self.assertIn("UNRESOLVED", finding.evidence)
 
     def test_forward_drop_policy_is_observed_without_forward_finding(self):
         chain = input_chain(

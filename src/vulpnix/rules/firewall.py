@@ -49,6 +49,246 @@ def _first_unconditional_verdict(chain: FirewallChain):
     return None
 
 
+
+@dataclass(frozen=True, slots=True)
+class _ChainFlowSummary:
+    """Possible outcomes from a bounded, conservative chain traversal."""
+
+    outcomes: tuple[str, ...]
+    limitations: tuple[str, ...]
+
+    @property
+    def complete(self) -> bool:
+        """Whether every explored path completed within the supported model."""
+        return "UNRESOLVED" not in self.outcomes and not self.limitations
+
+
+def _analyze_chain_flow(
+    chain: FirewallChain,
+    chain_index,
+    *,
+    max_states: int = 512,
+    max_steps: int = 128,
+    max_stack: int = 32,
+) -> _ChainFlowSummary:
+    """Explore possible outcomes without claiming full firewall semantics.
+
+    Conditional rules are modeled as potentially matching and not matching.
+    JUMP pushes a continuation, GOTO preserves the existing continuation,
+    and RETURN resumes the caller or applies the base-chain policy.
+
+    Unsupported actions, missing chains, loops, and exhausted budgets produce
+    UNRESOLVED rather than being interpreted as secure or insecure.
+    """
+    root_key = (
+        chain.implementation,
+        chain.family,
+        chain.table,
+        chain.name,
+    )
+    root_policy = (chain.policy or "").upper()
+
+    outcomes = set()
+    limitations = set()
+
+    # Each state contains:
+    # chain key, rule index, return stack, states on the current path, steps.
+    pending = [(root_key, 0, (), frozenset(), 0)]
+    processed = 0
+
+    continuing_targets = {
+        "CONTINUE", "LOG", "ULOG", "NOTRACK", "TRACE",
+    }
+
+    def finish_at_base_policy():
+        if root_policy in {"ACCEPT", "DROP", "REJECT"}:
+            outcomes.add(f"POLICY_{root_policy}")
+        else:
+            outcomes.add("UNRESOLVED")
+            limitations.add("base-chain policy unavailable or unsupported")
+
+    while pending:
+        if processed >= max_states:
+            outcomes.add("UNRESOLVED")
+            limitations.add(
+                f"control-flow state budget exhausted ({max_states})"
+            )
+            break
+
+        current_key, rule_index, stack, path, steps = pending.pop()
+        processed += 1
+
+        state = (current_key, rule_index, stack)
+
+        if state in path:
+            outcomes.add("UNRESOLVED")
+            limitations.add(
+                f"control-flow loop detected at chain {current_key[3]}"
+            )
+            continue
+
+        if steps >= max_steps:
+            outcomes.add("UNRESOLVED")
+            limitations.add(
+                f"control-flow step budget exhausted ({max_steps})"
+            )
+            continue
+
+        current_chain = chain_index.get(current_key)
+        if current_chain is None:
+            outcomes.add("UNRESOLVED")
+            limitations.add(
+                f"chain metadata unavailable for {current_key[3]}"
+            )
+            continue
+
+        ordered_rules = tuple(
+            sorted(current_chain.rules, key=lambda item: item.position)
+        )
+        current_path = path | {state}
+
+        # Falling off a user chain returns to its caller. If no caller frame
+        # remains (including after GOTO from the base chain), use the base
+        # chain policy.
+        if rule_index >= len(ordered_rules):
+            if stack:
+                return_key, return_index = stack[-1]
+                pending.append(
+                    (
+                        return_key,
+                        return_index,
+                        stack[:-1],
+                        current_path,
+                        steps + 1,
+                    )
+                )
+            else:
+                finish_at_base_policy()
+            continue
+
+        rule = ordered_rules[rule_index]
+        action = (rule.target or "").upper()
+        next_state = (
+            current_key,
+            rule_index + 1,
+            stack,
+            current_path,
+            steps + 1,
+        )
+
+        # A conditional rule has both a match path and a non-match path.
+        # For terminal/control-flow actions, the non-match path proceeds
+        # to the next rule. Ordinary continuing actions need only one path.
+        if action in {"ACCEPT", "DROP", "REJECT"}:
+            if not rule.unconditional:
+                pending.append(next_state)
+            outcomes.add(action)
+            continue
+
+        if action == "RETURN":
+            if not rule.unconditional:
+                pending.append(next_state)
+
+            if stack:
+                return_key, return_index = stack[-1]
+                pending.append(
+                    (
+                        return_key,
+                        return_index,
+                        stack[:-1],
+                        current_path,
+                        steps + 1,
+                    )
+                )
+            else:
+                finish_at_base_policy()
+            continue
+
+        if action in {"JUMP", "GOTO"}:
+            if not rule.unconditional:
+                pending.append(next_state)
+
+            if not rule.target_chain:
+                outcomes.add("UNRESOLVED")
+                limitations.add(
+                    f"{action} target missing at "
+                    f"{current_key[3]} rule {rule.position}"
+                )
+                continue
+
+            target_key = (
+                current_key[0],
+                current_key[1],
+                current_key[2],
+                rule.target_chain,
+            )
+
+            if target_key not in chain_index:
+                outcomes.add("UNRESOLVED")
+                limitations.add(
+                    f"referenced chain unavailable: {rule.target_chain}"
+                )
+                continue
+
+            if action == "JUMP":
+                if len(stack) >= max_stack:
+                    outcomes.add("UNRESOLVED")
+                    limitations.add(
+                        f"maximum nested-chain call depth reached ({max_stack})"
+                    )
+                    continue
+
+                next_stack = stack + ((current_key, rule_index + 1),)
+            else:
+                # GOTO enters the target without adding a continuation for
+                # the remainder of the current chain.
+                next_stack = stack
+
+            pending.append(
+                (target_key, 0, next_stack, current_path, steps + 1)
+            )
+            continue
+
+        if not action or action in continuing_targets:
+            pending.append(next_state)
+            continue
+
+        # Unknown targets may terminate processing or behave like a
+        # continuing target. Preserve both the uncertainty and a possible
+        # continuation instead of guessing their semantics.
+        outcomes.add("UNRESOLVED")
+        limitations.add(
+            f"unsupported target {action} at "
+            f"{current_key[3]} rule {rule.position}"
+        )
+        pending.append(next_state)
+
+    return _ChainFlowSummary(
+        outcomes=tuple(sorted(outcomes)),
+        limitations=tuple(sorted(limitations)),
+    )
+
+
+def _chain_flow_note(summary: _ChainFlowSummary) -> str:
+    """Format path-analysis evidence with explicit uncertainty."""
+    outcomes = ", ".join(summary.outcomes) if summary.outcomes else "none"
+    note = (
+        f" Bounded control-flow outcomes: {outcomes}. "
+        "Conditional rules are explored as match/no-match branches; "
+        "correlations between conditions and interactions with other "
+        "hooks or firewall backends are not resolved."
+    )
+
+    if summary.limitations:
+        note += (
+            " Analysis incomplete: "
+            + "; ".join(summary.limitations)
+            + "."
+        )
+
+    return note
+
+
 def _chain_label(chain: FirewallChain) -> str:
     return (
         f"{chain.implementation} {chain.family}/"
@@ -181,6 +421,58 @@ def _jump_chain_note(chain: FirewallChain, chain_index) -> str:
     )
 
 
+
+def _reachable_accept_finding(
+    chain: FirewallChain,
+    hook: str,
+    flow: _ChainFlowSummary,
+    verdict,
+) -> Finding | None:
+    """Create a REVIEW finding for a reachable ACCEPT path when needed."""
+    if "ACCEPT" not in flow.outcomes:
+        return None
+
+    if verdict is not None and verdict.target == "ACCEPT":
+        # The existing direct-verdict rule already reports this case.
+        return None
+
+    policy = (chain.policy or "").upper()
+
+    # A base-policy finding already covers accepting behavior and uncertainty
+    # when the base policy may be reached or the traversal is incomplete.
+    if policy == "ACCEPT" and (
+        "POLICY_ACCEPT" in flow.outcomes or not flow.complete
+    ):
+        return None
+
+    label = _chain_label(chain)
+    hook_title = "Input" if hook == "input" else "Forwarding"
+    evidence = (
+        f"{label}: a potentially reachable ACCEPT verdict was identified."
+        f"{_chain_flow_note(flow)}"
+    )
+
+    return _review_finding(
+        rule_id=_family_rule_id(
+            f"FIREWALL-{hook.upper()}-ACCEPT-001",
+            chain,
+        ),
+        title=f"{hook_title} chain has a potentially reachable ACCEPT path",
+        evidence=evidence,
+        explanation=(
+            "The collected rules provide a possible ACCEPT path within the "
+            "supported control-flow model. Conditional matches, additional "
+            "hooks, and other firewall backends can change actual outcomes. "
+            "This does not prove remote reachability."
+        ),
+        recommendation=(
+            "Review the rules and conditions on this path together with "
+            "other active hooks. Resolve any reported analysis limitations "
+            "before relying on this result."
+        ),
+    )
+
+
 def assess_firewall_policy(
     snapshot: FirewallSnapshot,
 ) -> FirewallPolicyAssessment:
@@ -283,11 +575,20 @@ def assess_firewall_policy(
         label = _chain_label(chain)
         policy = (chain.policy or "").upper()
         verdict = _first_unconditional_verdict(chain)
+        flow = _analyze_chain_flow(chain, chain_index)
+        flow_note = _chain_flow_note(flow)
+
+        accept_finding = _reachable_accept_finding(
+            chain, "input", flow, verdict
+        )
+        if accept_finding is not None:
+            checks.append(f"REVIEW · {accept_finding.evidence}")
+            findings.append(accept_finding)
 
         if verdict is not None and verdict.target == "ACCEPT":
             evidence = (
                 f"{label}: unconditional ACCEPT at rule {verdict.position}; "
-                f"chain policy={policy or 'unknown'}."
+                f"chain policy={policy or 'unknown'}.{flow_note}"
             )
             checks.append(
                 f"REVIEW · {evidence} Packets reaching this rule are "
@@ -317,7 +618,7 @@ def assess_firewall_policy(
                 f"POLICY OBSERVED · {label}: unconditional "
                 f"{verdict.target} at rule {verdict.position} blocks "
                 "packets that reach that rule; preceding rules and other "
-                "firewall hooks can change individual outcomes."
+                "firewall hooks can change individual outcomes." + flow_note
             )
             continue
 
@@ -325,13 +626,22 @@ def assess_firewall_policy(
             checks.append(
                 f"POLICY OBSERVED · {label}: default policy {policy} "
                 "denies packets not otherwise given a terminal verdict."
+                + flow_note
             )
             continue
 
         if policy == "ACCEPT":
+            if flow.complete and "POLICY_ACCEPT" not in flow.outcomes:
+                evidence = (
+                    f"{label}: default policy ACCEPT was not reachable "
+                    f"in the bounded control-flow analysis.{flow_note}"
+                )
+                checks.append(f"POLICY OBSERVED · {evidence}")
+                continue
+
             evidence = (
                 f"{label}: default policy ACCEPT and no unconditional "
-                "DROP/REJECT fallback was identified."
+                "DROP/REJECT fallback was identified." + flow_note
             )
             checks.append(f"REVIEW · {evidence}")
             findings.append(
@@ -353,7 +663,7 @@ def assess_firewall_policy(
             )
             continue
 
-        evidence = f"{label}: no recognizable default policy was available."
+        evidence = f"{label}: no recognizable default policy was available.{flow_note}"
         checks.append(f"REVIEW · {evidence}")
         findings.append(
             _review_finding(
@@ -372,7 +682,16 @@ def assess_firewall_policy(
         label = _chain_label(chain)
         policy = (chain.policy or "").upper()
         verdict = _first_unconditional_verdict(chain)
-        jump_note = _jump_chain_note(chain, chain_index)
+        flow = _analyze_chain_flow(chain, chain_index)
+        flow_note = _chain_flow_note(flow)
+        jump_note = _jump_chain_note(chain, chain_index) + flow_note
+
+        accept_finding = _reachable_accept_finding(
+            chain, "forward", flow, verdict
+        )
+        if accept_finding is not None:
+            checks.append(f"REVIEW · {accept_finding.evidence}")
+            findings.append(accept_finding)
 
         if verdict is not None and verdict.target == "ACCEPT":
             evidence = (
@@ -415,6 +734,14 @@ def assess_firewall_policy(
             continue
 
         if policy == "ACCEPT":
+            if flow.complete and "POLICY_ACCEPT" not in flow.outcomes:
+                evidence = (
+                    f"{label}: default policy ACCEPT was not reachable "
+                    f"in the bounded control-flow analysis.{jump_note}"
+                )
+                checks.append(f"POLICY OBSERVED · {evidence}")
+                continue
+
             evidence = (
                 f"{label}: default policy ACCEPT and no unconditional "
                 f"DROP/REJECT fallback was identified.{jump_note}"
@@ -441,7 +768,7 @@ def assess_firewall_policy(
             )
             continue
 
-        evidence = f"{label}: no recognizable forwarding policy was available."
+        evidence = f"{label}: no recognizable forwarding policy was available.{jump_note}"
         checks.append(f"REVIEW · {evidence}")
         findings.append(
             _review_finding(
