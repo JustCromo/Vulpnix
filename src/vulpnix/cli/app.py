@@ -80,6 +80,7 @@ from vulpnix.cli.report import (
 )
 
 from vulpnix.cli.html_report import save_html_report
+from vulpnix.cli.report_export import save_report_export
 from vulpnix.rules.filesystem import (
     FilesystemAssessment,
     assess_sensitive_files,
@@ -228,6 +229,7 @@ def _show_help() -> None:
     )
     option_rows = (
         ("--details", "Expand technical evidence without changing assessment rules"),
+        ("--format html|markdown|json", "Export the report to a file"),
     )
     all_rows = command_rows + area_rows + option_rows
     label_width = max(len(label) for label, _ in all_rows)
@@ -363,16 +365,25 @@ def _render_result(result, *, details: bool = True) -> None:
         privilege=result.privilege,
         details=details,
     )
-    if _REPORT_EXPORT_FORMAT == "html":
+    if _REPORT_EXPORT_FORMAT is not None:
+        labels = {"html": "HTML", "markdown": "Markdown", "json": "JSON"}
+        label = labels[_REPORT_EXPORT_FORMAT]
         try:
-            destination = save_html_report(
-                report,
-                area=_REPORT_EXPORT_AREA,
-            )
+            if _REPORT_EXPORT_FORMAT == "html":
+                destination = save_html_report(
+                    report,
+                    area=_REPORT_EXPORT_AREA,
+                )
+            else:
+                destination = save_report_export(
+                    report,
+                    _REPORT_EXPORT_FORMAT,
+                    area=_REPORT_EXPORT_AREA,
+                )
         except (OSError, ValueError) as error:
-            print(f"Could not save HTML report: {error}")
+            print(f"Could not save {label} report: {error}")
         else:
-            print(f"HTML report saved: {destination}")
+            print(f"{label} report saved: {destination}")
         return
 
     print("\n".join(render_scan_report(report, terminal_size()[0])))
@@ -2119,11 +2130,15 @@ _SCAN_AREAS = (
     "network",
     "packages",
 )
-_COMPLETIONS += (
-    "scan --format html",
-    "scan --details --format html",
-    *(f"scan {area} --format html" for area in _SCAN_AREAS),
-    *(f"scan {area} --details --format html" for area in _SCAN_AREAS),
+_COMPLETIONS += tuple(
+    command
+    for output_format in ("html", "markdown", "json")
+    for command in (
+        f"scan --format {output_format}",
+        f"scan --details --format {output_format}",
+        *(f"scan {area} --format {output_format}" for area in _SCAN_AREAS),
+        *(f"scan {area} --details --format {output_format}" for area in _SCAN_AREAS),
+    )
 )
 
 
@@ -2162,8 +2177,8 @@ def _dispatch_command(command_name: str) -> bool:
         global _REPORT_EXPORT_FORMAT, _REPORT_EXPORT_AREA
 
         usage = (
-            "Usage: scan [--details] [--format html] | "
-            "scan <area> [--details] [--format html] "
+            "Usage: scan [--details] [--format html|markdown|json] | "
+            "scan <area> [--details] [--format html|markdown|json] "
             "(areas: host, hardening, users, service, ssh, filesystem, "
             "network, packages)"
         )
@@ -2188,7 +2203,7 @@ def _dispatch_command(command_name: str) -> bool:
                     index += 1
                 else:
                     requested_format = parts[index + 1]
-                    if output_format is not None or requested_format != "html":
+                    if output_format is not None or requested_format not in {"html", "markdown", "json"}:
                         invalid = True
                     else:
                         output_format = requested_format
