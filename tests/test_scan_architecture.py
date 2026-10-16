@@ -29,7 +29,7 @@ class ScanArchitectureTests(unittest.TestCase):
         )
 
         self.assertEqual(result.coverage, AssessmentCoverage.PARTIAL)
-        self.assertEqual(result.review_items, 1)
+        self.assertEqual(result.review_items, 0)
         self.assertEqual(result.findings, (finding,))
 
     def test_known_non_boolean_unit_states_are_not_counted_as_unknown(self):

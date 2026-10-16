@@ -82,13 +82,56 @@ def _status_badge(label: object, status: object) -> str:
     )
 
 
+def _render_startup_counts(value: object) -> str | None:
+    """Render service startup states as separate, neutral count chips."""
+    match = re.fullmatch(
+        r"\s*(\d+)\s+yes\s*·\s*(\d+)\s+no\s*·\s*"
+        r"(\d+)\s+non-boolean\s*·\s*(\d+)\s+unknown\s*",
+        str(value),
+        flags=re.IGNORECASE,
+    )
+    if match is None:
+        return None
+
+    categories = (
+        ("yes", match.group(1), "yes"),
+        ("no", match.group(2), "no"),
+        ("non-boolean", match.group(3), "non-boolean"),
+        ("unknown", match.group(4), "unknown"),
+    )
+
+    chips = "".join(
+        f'<span class="service-count service-count--{css_name}">'
+        f'<strong>{count}</strong> {label}</span>'
+        for css_name, count, label in categories
+    )
+
+    return (
+        '<div class="service-counts" role="group" '
+        'aria-label="Service startup enablement counts">'
+        + chips
+        + "</div>"
+    )
+
+
 def _render_fact(label: object, value: object) -> str:
-    status = _fact_status(str(label), value)
+    label_text = str(label)
+    startup_counts = (
+        _render_startup_counts(value)
+        if label_text.strip().lower() == "startup enabled"
+        else None
+    )
+
+    status = _fact_status(label_text, value)
     css = f" status-value--{_status_class(status)}" if status else ""
+    rendered_value = (
+        startup_counts if startup_counts is not None else _e(value)
+    )
+
     return (
         '<div class="fact-row">'
         f'<dt class="fact-label">{_e(label)}</dt>'
-        f'<dd class="fact-value{css}">{_e(value)}</dd>'
+        f'<dd class="fact-value{css}">{rendered_value}</dd>'
         "</div>"
     )
 
@@ -733,6 +776,12 @@ h2 { font-size: 1.35rem; margin: 0; letter-spacing: -.02em; }
 .section-message, .section-footer { color: var(--muted); }
 .facts-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px 18px; margin: 0 0 17px; }
 .fact-row { display: grid; grid-template-columns: minmax(120px, .9fr) minmax(0, 1.1fr); gap: 12px; align-items: start; padding: 10px 0; border-bottom: 1px solid #3a3d4e70; min-width: 0; }
+.service-counts { display: flex; flex-wrap: wrap; align-items: center; gap: 7px; }
+.service-count { display: inline-flex; align-items: baseline; gap: 5px; border: 1px solid var(--border); border-radius: 8px; padding: 4px 8px; background: #1718217a; color: var(--muted); font-size: .8rem; white-space: nowrap; }
+.service-count strong { color: var(--text); font-variant-numeric: tabular-nums; }
+.service-count--non-boolean { border-style: dashed; }
+.service-count--unknown { color: var(--amber); border-color: #ffcd8044; background: #ffcd8014; }
+.service-count--unknown strong { color: var(--amber); }
 .fact-label { color: var(--muted); overflow-wrap: anywhere; }
 .fact-value { margin: 0; overflow-wrap: anywhere; min-width: 0; color: var(--text); }
 .table-wrap { overflow-x: auto; margin: 14px 0; }

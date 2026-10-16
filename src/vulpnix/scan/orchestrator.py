@@ -170,7 +170,7 @@ class ScanOrchestrator:
         except (OSError, UnicodeError, ValueError) as error:
             self._emit(ScanStage.ERROR, f"SSH assessment failed: {error}")
             raise
-        review_items = sum(
+        has_unresolved_findings = any(
             finding.status in {
                 FindingStatus.REVIEW,
                 FindingStatus.NOT_ASSESSED,
@@ -180,7 +180,7 @@ class ScanOrchestrator:
         )
         coverage = (
             AssessmentCoverage.PARTIAL
-            if review_items
+            if has_unresolved_findings
             else AssessmentCoverage.COMPLETE
         )
         self._emit(ScanStage.COMPLETED, "SSH assessment completed")
@@ -189,7 +189,8 @@ class ScanOrchestrator:
             findings=findings,
             scope=("SSH configuration",),
             coverage=coverage,
-            review_items=review_items,
+            # Findings are counted separately from additional review items.
+            review_items=0,
         )
 
     def run_filesystem(self, *, section_builder: FilesystemSectionBuilder, sensitive_file_collector: Callable[[], tuple[FileMetadataResult, ...]] = collect_sensitive_file_metadata, sensitive_file_assessor: Callable[[tuple[FileMetadataResult, ...]], FilesystemAssessment] = assess_sensitive_files, setid_collector: Callable[[], FilesystemCoverage] = collect_setid_files, setid_assessor: Callable[[FilesystemCoverage], SetIdAssessment] = assess_setid_files) -> ScanResult:

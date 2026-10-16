@@ -172,6 +172,114 @@ class HTMLReportTests(unittest.TestCase):
         self.assertIn("Public-key authentication", html)
         self.assertIn("Password authentication", html)
 
+    def test_service_startup_counts_keep_known_and_unknown_states_distinct(self):
+        report = replace(
+            sample_report(),
+            sections=(
+                ReportSection(
+                    title="SERVICES",
+                    facts=(
+                        ("Units", "342"),
+                        ("State", "42 active · 70 inactive · 230 other/unknown"),
+                        ("Startup enabled", "12 yes · 102 no · 205 non-boolean · 23 unknown"),
+                    ),
+                ),
+            ),
+            scope=("service inventory",),
+        )
+
+        html = render_html_report(report)
+
+        self.assertIn('class="service-counts" role="group"', html)
+        self.assertIn(
+            'class="service-count service-count--yes"><strong>12</strong> yes',
+            html,
+        )
+        self.assertIn(
+            'class="service-count service-count--no"><strong>102</strong> no',
+            html,
+        )
+        self.assertIn(
+            'class="service-count service-count--non-boolean"><strong>205</strong> non-boolean',
+            html,
+        )
+        self.assertIn(
+            'class="service-count service-count--unknown"><strong>23</strong> unknown',
+            html,
+        )
+        self.assertIn("42 active · 70 inactive · 230 other/unknown", html)
+
+    def test_ssh_review_finding_limits_coverage_without_becoming_verified(self):
+        finding = Finding(
+            rule_id="SSH-PASSWORD-001",
+            title="SSH password authentication is enabled",
+            evidence="PasswordAuthentication yes",
+            explanation="Password login may be unnecessary for this host.",
+            recommendation="Review whether password authentication is required.",
+            status=FindingStatus.REVIEW,
+            severity="MEDIUM",
+        )
+        report = replace(
+            sample_report(),
+            findings=(finding,),
+            risk_assessment=assess_findings((finding,)),
+            coverage=AssessmentCoverage.COMPLETE,
+            review_items=0,
+        )
+
+        html = render_html_report(report)
+
+        self.assertIn("REVIEW REQUIRED", html)
+        self.assertIn('class="gauge-progress gauge--limited"', html)
+        self.assertIn(">LIMITED</span>", html)
+        self.assertIn('<div class="stat-label">Findings to review</div>', html)
+        self.assertIn('<strong class="stat-value">1</strong>', html)
+        self.assertIn("not proof of zero risk", html)
+        self.assertIn("0/25", html)
+        self.assertIn('class="finding-card finding-card--review"', html)
+        self.assertIn("SSH password authentication is enabled", html)
+
+    def test_aggregated_cvss_sources_and_single_metric_render_once(self):
+        vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:L/I:L/A:N"
+        source = "NVD (cve@vendor.example; nvd@nist.gov)"
+        finding = Finding(
+            rule_id="PACKAGE-CVE-2026-12345",
+            title="example-package has an advisory requiring review",
+            evidence="Installed package version requires advisory review.",
+            explanation="The installed version cannot be confirmed vulnerable from available source data.",
+            recommendation="Review the advisory and package update guidance.",
+            status=FindingStatus.REVIEW,
+            severity="MEDIUM",
+            cves=(
+                CVEAssessment(
+                    cve_id="CVE-2026-12345",
+                    cvss=(
+                        CVSSScore(
+                            version="3.1",
+                            base_score=5.5,
+                            severity="MEDIUM",
+                            vector=vector,
+                            source=source,
+                        ),
+                    ),
+                ),
+            ),
+        )
+        report = replace(
+            sample_report(),
+            findings=(finding,),
+            risk_assessment=assess_findings((finding,)),
+        )
+
+        html = render_html_report(report)
+
+        self.assertIn("CVE-2026-12345 · 5.5 MEDIUM", html)
+        self.assertIn("CVSS 3.1 · 5.5 · MEDIUM", html)
+        self.assertIn(f"Source:</strong> {source}", html)
+        self.assertEqual(html.count(source), 1)
+        self.assertEqual(html.count("CVSS 3.1 · 5.5 · MEDIUM"), 1)
+        self.assertEqual(html.count(vector), 1)
+
     def test_report_contains_accessible_gauge_and_responsive_print_styles(self):
         html = render_html_report(sample_report())
 
