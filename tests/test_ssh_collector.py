@@ -69,25 +69,64 @@ class CollectSSHConfigTests(unittest.TestCase):
             ],
         )
 
-    def test_unrecognized_g_is_reported_as_unsupported_across_message_variants(self) -> None:
+    def test_unrecognized_g_falls_back_to_t(self) -> None:
         diagnostics = (
             "sshd: illegal option -- G",
             "Unknown option '-G'; see usage",
         )
         for diagnostic in diagnostics:
             with self.subTest(diagnostic=diagnostic):
-                which, run = self._mock_sshd(
-                    subprocess.CompletedProcess(
-                        ["sshd", "-G"], 2, "usage: sshd", diagnostic
-                    )
+                first = subprocess.CompletedProcess(
+                    ["sshd", "-G"], 2, "usage: sshd", diagnostic
                 )
-                with which, run:
-                    with self.assertRaises(SSHGUnsupportedError) as raised:
-                        collect_ssh_config()
+                second = subprocess.CompletedProcess(
+                    ["sshd", "-T"], 0, _SSH_CONFIG, ""
+                )
+                with (
+                    patch(
+                        "vulpnix.collectors.ssh.shutil.which",
+                        return_value="/usr/sbin/sshd",
+                    ),
+                    patch(
+                        "vulpnix.collectors.ssh.subprocess.run",
+                        side_effect=[first, second],
+                    ) as run_mock,
+                ):
+                    config = collect_ssh_config()
 
-                self.assertEqual(raised.exception.returncode, 2)
-                self.assertEqual(raised.exception.stderr, diagnostic)
+                self.assertTrue(config.password_authentication)
+                self.assertEqual(run_mock.call_count, 2)
+                self.assertEqual(
+                    run_mock.call_args_list[0].args[0],
+                    ["/usr/sbin/sshd", "-G"],
+                )
+                self.assertEqual(
+                    run_mock.call_args_list[1].args[0],
+                    ["/usr/sbin/sshd", "-T"],
+                )
 
+    def test_t_fallback_failure_reports_actual_option(self) -> None:
+        first = subprocess.CompletedProcess(
+            ["sshd", "-G"], 2, "usage: sshd", "illegal option -- G"
+        )
+        second = subprocess.CompletedProcess(
+            ["sshd", "-T"], 255, "", "Unable to load sshd configuration"
+        )
+        with (
+            patch(
+                "vulpnix.collectors.ssh.shutil.which",
+                return_value="/usr/sbin/sshd",
+            ),
+            patch(
+                "vulpnix.collectors.ssh.subprocess.run",
+                side_effect=[first, second],
+            ),
+        ):
+            with self.assertRaises(SSHCommandError) as raised:
+                collect_ssh_config()
+
+        self.assertEqual(raised.exception.option, "-T")
+        self.assertIn("sshd -T", str(raised.exception))
     def test_other_nonzero_exit_remains_a_command_failure(self) -> None:
         which, run = self._mock_sshd(
             subprocess.CompletedProcess(

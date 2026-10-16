@@ -1585,12 +1585,14 @@ def _ssh_error_message(error: Exception) -> str:
         return "sshd did not return configuration in time."
     if isinstance(error, SSHGUnsupportedError):
         detail = _ssh_command_detail(error)
+        option = getattr(error, "option", "-G")
         return (
-            "sshd -G is not supported by this OpenSSH installation."
+            f"sshd {option} is not supported by this OpenSSH installation."
             f"{detail}"
         )
     if isinstance(error, SSHCommandError):
-        return f"sshd -G failed{_ssh_command_detail(error)}."
+        option = getattr(error, "option", "-G")
+        return f"sshd {option} failed{_ssh_command_detail(error)}."
     if isinstance(error, subprocess.CalledProcessError):
         return "sshd -G could not print the effective configuration."
     if isinstance(error, (UnicodeError, ValueError)):

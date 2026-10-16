@@ -35,6 +35,7 @@ MANAGER_BY_ID = {
     "manjaro": "pacman",
     "endeavouros": "pacman",
     "artix": "pacman",
+    "void": "xbps-query",
 }
 
 MANAGER_COMMANDS = {
@@ -51,6 +52,7 @@ MANAGER_COMMANDS = {
         r"%{NAME}\t%{EPOCHNUM}:%{VERSION}-%{RELEASE}\t%{ARCH}\n",
     ),
     "apk": ("apk", "info", "-v"),
+    "xbps-query": ("xbps-query", "-l"),
 }
 
 
@@ -137,6 +139,32 @@ def _parse_package_lines(
             name, version = match.groups()
             architecture = None
 
+        elif manager == "xbps-query":
+            # xbps-query -l reports a state followed by pkgver and a description.
+            # Only fully installed packages are included in the inventory.
+            parts = line.split(None, 2)
+            if len(parts) < 2:
+                malformed += 1
+                continue
+
+            state, package_version = parts[0], parts[1]
+            if state in {"uu", "hr", "??"}:
+                continue
+            if state not in {"ii", "[*]"}:
+                malformed += 1
+                continue
+
+            match = re.fullmatch(
+                r"(.+)-([0-9][A-Za-z0-9._+~:]*)",
+                package_version,
+            )
+            if not match:
+                malformed += 1
+                continue
+
+            name, version = match.groups()
+            architecture = None
+
         else:
             malformed += 1
             continue
@@ -171,11 +199,13 @@ def collect_package_inventory(
     version_id = release.get("VERSION_ID", "")
     id_like = release.get("ID_LIKE", "")
 
-    available = {
-        manager: which(manager)
-        for manager in MANAGER_COMMANDS
-        if which(manager)
-    }
+    # Probe each executable once. Availability is a capability observation,
+    # not proof that a particular distribution uses that package database.
+    available: dict[str, str] = {}
+    for candidate_manager in MANAGER_COMMANDS:
+        executable_path = which(candidate_manager)
+        if executable_path:
+            available[candidate_manager] = executable_path
     manager = _manager_for(distro_id, id_like, available)
 
     if manager is None:

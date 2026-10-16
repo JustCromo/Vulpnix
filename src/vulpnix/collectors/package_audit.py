@@ -66,16 +66,25 @@ def _http_json(url: str, payload: dict[str, Any] | None = None, *, timeout: int 
 
 
 def _osv_ecosystem(inventory: PackageInventory) -> str | None:
-    """Map only distributions with an OSV ecosystem mapping we intend to support."""
-    distro = inventory.distribution_id.lower()
+    """Map only distributions whose OSV ecosystem and release are identifiable."""
+    distro = inventory.distribution_id.strip().lower()
     release = inventory.release.strip()
+    pretty_name = inventory.distribution_name.strip()
 
     if distro == "debian" and release:
         major = release.split(".", 1)[0]
-        return f"Debian:{major}" if major.isdigit() else None
+        if major.isdigit():
+            return f"Debian:{major}"
+        if release.lower() in {"sid", "unstable"}:
+            return "Debian:sid"
 
     if distro == "ubuntu" and re.fullmatch(r"\d{2}\.\d{2}(?:\.\d+)?", release):
-        return f"Ubuntu:{release.split('.')[0]}.{release.split('.')[1]}"
+        major, minor = release.split(".")[:2]
+        normalized_release = f"{major}.{minor}"
+        year = int(major)
+        is_lts = minor == "04" and year % 2 == 0
+        suffix = ":LTS" if is_lts else ""
+        return f"Ubuntu:{normalized_release}{suffix}"
 
     if distro == "alpine" and re.fullmatch(r"\d+\.\d+(?:\.\d+)?", release):
         major, minor = release.split(".")[:2]
@@ -89,8 +98,40 @@ def _osv_ecosystem(inventory: PackageInventory) -> str | None:
         major = release.split(".", 1)[0]
         return f"Rocky Linux:{major}" if major.isdigit() else None
 
-    return None
+    if distro in {"azurelinux", "cbl-mariner", "mariner"}:
+        if re.fullmatch(r"\d+(?:\.\d+)?", release):
+            return f"Azure Linux:{release}"
 
+    if distro == "mageia" and re.fullmatch(r"\d+(?:\.\d+)?", release):
+        major = release.split(".", 1)[0]
+        return f"Mageia:{major}"
+
+    if distro in {"opensuse", "opensuse-leap", "opensuse-tumbleweed"}:
+        if pretty_name.lower().startswith("opensuse "):
+            if distro == "opensuse-tumbleweed" or (release and release in pretty_name):
+                # OSV's openSUSE release suffix is the marketing name from
+                # PRETTY_NAME; inventory uses it when present.
+                return f"openSUSE:{pretty_name}"
+
+    if distro in {"suse", "sles"} and pretty_name.lower().startswith("suse "):
+        release_in_name = bool(release and release in pretty_name)
+        version_parts = release.split(".", 1)
+        service_pack_in_name = (
+            len(version_parts) == 2
+            and version_parts[0].isdigit()
+            and version_parts[1].isdigit()
+            and re.search(
+                rf"\b{re.escape(version_parts[0])}\s+SP{re.escape(version_parts[1])}\b",
+                pretty_name,
+                re.IGNORECASE,
+            ) is not None
+        )
+        if release_in_name or service_pack_in_name:
+            return f"SUSE:{pretty_name}"
+
+    # Do not guess product-stream CPEs for Red Hat-based distributions.
+    # They are required for an accurate Red Hat OSV ecosystem mapping.
+    return None
 
 def _version_compare_arch(installed: str, fixed: str, *, which=None, runner=None) -> int | None:
     """Return vercmp(installed, fixed); None means comparison was not reliable."""

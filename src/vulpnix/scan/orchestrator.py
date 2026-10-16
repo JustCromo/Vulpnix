@@ -376,9 +376,9 @@ class ScanOrchestrator:
             if isinstance(error, SSHCommandError):
                 detail = "".join(ch if ch.isprintable() else "�" for ch in error.diagnostic)
                 if isinstance(error, SSHGUnsupportedError):
-                    message = f"sshd -G is not supported by this OpenSSH installation (exit {error.returncode}: {detail})"
+                    message = f"sshd {error.option} is not supported by this OpenSSH installation (exit {error.returncode}: {detail})"
                 else:
-                    message = f"sshd -G failed (exit {error.returncode}: {detail})"
+                    message = f"sshd {error.option} failed (exit {error.returncode}: {detail})"
             else:
                 message = str(error) or "SSH configuration is unavailable."
             sections.append(ReportSection("SSH", status="NOT_ASSESSED", message=message))

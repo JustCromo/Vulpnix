@@ -49,6 +49,19 @@ class PackageInventoryTests(unittest.TestCase):
         self.assertEqual(packages[0].version, "5.2.037-1")
         self.assertEqual(malformed, 1)
 
+    def test_xbps_parser_keeps_hyphenated_names_and_ignores_unconfigured_packages(self):
+        packages, malformed = _parse_package_lines(
+            "xbps-query",
+            "ii bash-5.2.37_1 GNU Bash\n"
+            "ii libfoo-32bit-1.2_1 Example library\n"
+            "uu partial-1.0_1 Needs configuration\n",
+        )
+        self.assertEqual(
+            [(item.name, item.version) for item in packages],
+            [("bash", "5.2.37_1"), ("libfoo-32bit", "1.2_1")],
+        )
+        self.assertEqual(malformed, 0)
+
     def test_dpkg_inventory_parser_keeps_architecture(self):
         packages, malformed = _parse_package_lines(
             "dpkg-query", "openssl\t3.0.14-1\tamd64\n"
@@ -87,6 +100,40 @@ class PackageInventoryTests(unittest.TestCase):
         self.assertEqual(len(inventory.packages), 1)
         self.assertEqual(inventory.packages[0].name, "bash")
 
+    def test_void_uses_xbps_query_for_read_only_inventory(self):
+        def fake_which(name):
+            return "/usr/bin/xbps-query" if name == "xbps-query" else None
+
+        def fake_run(command, **kwargs):
+            self.assertEqual(command, ["/usr/bin/xbps-query", "-l"])
+            self.assertFalse(kwargs["shell"])
+            return SimpleNamespace(
+                returncode=0,
+                stdout=(
+                    "ii bash-5.2.37_1 GNU Bash\n"
+                    "ii openssl-3.4.1_1 TLS library\n"
+                ),
+                stderr="",
+            )
+
+        with patch(
+            "vulpnix.collectors.packages.read_os_release",
+            return_value={
+                "ID": "void",
+                "NAME": "Void Linux",
+                "PRETTY_NAME": "Void Linux",
+            },
+        ):
+            inventory = collect_package_inventory(
+                which=fake_which,
+                runner=fake_run,
+            )
+
+        self.assertEqual(inventory.status, "OK")
+        self.assertEqual(inventory.manager, "xbps-query")
+        self.assertEqual(len(inventory.packages), 2)
+        self.assertEqual(inventory.packages[1].name, "openssl")
+
     def test_missing_selected_manager_is_not_assessed(self):
         with patch("vulpnix.collectors.packages.read_os_release", return_value={
             "ID": "debian", "NAME": "Debian", "VERSION_ID": "12"
@@ -109,9 +156,56 @@ class PackageAuditTests(unittest.TestCase):
 
     def test_osv_mapping_only_uses_configured_ecosystems(self):
         self.assertEqual(_osv_ecosystem(self.inventory("debian", "12.8")), "Debian:12")
-        self.assertEqual(_osv_ecosystem(self.inventory("ubuntu", "24.04")), "Ubuntu:24.04")
+        self.assertEqual(_osv_ecosystem(self.inventory("ubuntu", "24.04")), "Ubuntu:24.04:LTS")
         self.assertEqual(_osv_ecosystem(self.inventory("alpine", "3.22.1")), "Alpine:v3.22")
         self.assertIsNone(_osv_ecosystem(self.inventory("fedora", "43")))
+
+    def test_osv_mapping_covers_additional_supported_release_families(self):
+        self.assertEqual(
+            _osv_ecosystem(self.inventory("azurelinux", "3.0")),
+            "Azure Linux:3.0",
+        )
+        self.assertEqual(
+            _osv_ecosystem(self.inventory("cbl-mariner", "2.0")),
+            "Azure Linux:2.0",
+        )
+        self.assertEqual(
+            _osv_ecosystem(self.inventory("mageia", "9.1")),
+            "Mageia:9",
+        )
+        self.assertEqual(
+            _osv_ecosystem(self.inventory("ubuntu", "24.10")),
+            "Ubuntu:24.10",
+        )
+
+        opensuse = PackageInventory(
+            "opensuse-leap",
+            "openSUSE Leap 15.6",
+            "15.6",
+            "rpm",
+            (InstalledPackage("demo", "1.0-1"),),
+            "OK",
+        )
+        self.assertEqual(
+            _osv_ecosystem(opensuse),
+            "openSUSE:openSUSE Leap 15.6",
+        )
+
+        suse = PackageInventory(
+            "sles",
+            "SUSE Linux Enterprise Server 15 SP6",
+            "15.6",
+            "rpm",
+            (InstalledPackage("demo", "1.0-1"),),
+            "OK",
+        )
+        self.assertEqual(
+            _osv_ecosystem(suse),
+            "SUSE:SUSE Linux Enterprise Server 15 SP6",
+        )
+
+        # Never invent a product-stream CPE for a generic RHEL install.
+        self.assertIsNone(_osv_ecosystem(self.inventory("rhel", "9")))
 
     def test_arch_version_compare_requires_native_vercmp(self):
         self.assertIsNone(_version_compare_arch("1.0", "1.1", which=lambda _: None))
