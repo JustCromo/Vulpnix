@@ -135,8 +135,9 @@ not be hidden to obtain a qualified status.
 Before publishing a release intended for use outside the development machine:
 
 - run the full automated test suite and the project's configured static checks;
-- verify package installation and the documented entry point in a clean
-  environment;
+- verify the documented per-user and system-wide installation paths and
+  the resulting command location in a clean environment; test upgrade and
+  uninstall using the same pipx configuration;
 - exercise rootless and privileged execution in a disposable Linux VM;
 - verify at least one known-good and one known-bad fixture for each high-impact
   security rule;
@@ -151,12 +152,12 @@ checks support.
 
 ## 6. Retroactive qualification of the existing milestones
 
-M1–M4 and M4.5 were marked implementation-complete before this standard existed.
-They must be reviewed against the same acceptance gate. Initial M5 feature work
-has begun in parallel at the user's request; this does not qualify earlier
-milestones, waive any release criteria, or justify describing the current tool
-as fully validated. Their code is not presumed incorrect; their quality
-qualification is simply not yet established.
+M1–M4 and M4.5 were marked implementation-complete before this standard
+existed. They must be reviewed against the same acceptance gate. M5 development
+is in progress; this does not qualify earlier milestones, waive release
+criteria, or justify describing the current tool as fully validated. Existing
+code is not presumed incorrect; its quality qualification is simply not yet
+established.
 
 | Area | Required retrospective review |
 |---|---|

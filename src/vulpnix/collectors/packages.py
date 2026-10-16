@@ -43,7 +43,7 @@ MANAGER_COMMANDS = {
     "dpkg-query": (
         "dpkg-query",
         "-W",
-        r"-f=${Package}\t${Version}\t${Architecture}\n",
+        r"-f=${Package}\t${Version}\t${Architecture}\t${source:Package}\t${source:Version}\n",
     ),
     "rpm": (
         "rpm",
@@ -111,6 +111,9 @@ def _parse_package_lines(
         if not line.strip():
             continue
 
+        source_name: str | None = None
+        source_version: str | None = None
+
         if manager == "pacman":
             parts = line.split(None, 1)
             if len(parts) != 2:
@@ -128,6 +131,15 @@ def _parse_package_lines(
             architecture = parts[2].strip() if len(parts) > 2 else None
             if architecture in ("", "(none)", "unknown"):
                 architecture = None
+
+            if manager == "dpkg-query":
+                source_name = parts[3].strip() if len(parts) > 3 else None
+                source_version = parts[4].strip() if len(parts) > 4 else None
+
+                if source_name in ("", "(none)", "unknown"):
+                    source_name = None
+                if source_version in ("", "(none)", "unknown"):
+                    source_version = None
 
         elif manager == "apk":
             # Alpine package names may contain hyphens. The version starts
@@ -169,7 +181,7 @@ def _parse_package_lines(
             malformed += 1
             continue
 
-        packages.append(InstalledPackage(name, version, architecture))
+        packages.append(InstalledPackage(name, version, architecture, source_name, source_version))
 
     # Stable ordering makes reports and tests deterministic.
     packages.sort(key=lambda item: (item.name, item.version, item.architecture or ""))

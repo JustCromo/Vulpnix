@@ -63,12 +63,16 @@ class PackageInventoryTests(unittest.TestCase):
         )
         self.assertEqual(malformed, 0)
 
-    def test_dpkg_inventory_parser_keeps_architecture(self):
+    def test_dpkg_inventory_parser_keeps_source_metadata_and_architecture(self):
         packages, malformed = _parse_package_lines(
-            "dpkg-query", "openssl\t3.0.14-1\tamd64\n"
+            "dpkg-query",
+            "libfoo1\t1.2.3-1ubuntu1\tamd64\tfoo\t1.2.3-1\n",
         )
-        self.assertEqual(packages[0].name, "openssl")
+        self.assertEqual(packages[0].name, "libfoo1")
+        self.assertEqual(packages[0].version, "1.2.3-1ubuntu1")
         self.assertEqual(packages[0].architecture, "amd64")
+        self.assertEqual(packages[0].source_name, "foo")
+        self.assertEqual(packages[0].source_version, "1.2.3-1")
         self.assertEqual(malformed, 0)
 
     def test_apk_parser_handles_hyphens_in_package_names_and_versions(self):
@@ -337,6 +341,51 @@ class PackageAuditTests(unittest.TestCase):
         fetch.assert_not_called()
         self.assertEqual(audit.status, "NOT_ASSESSED")
         self.assertIn("No validated CVE ecosystem", audit.messages[0])
+
+    def test_osv_ubuntu_query_uses_source_package_metadata(self):
+        from vulpnix.collectors.package_audit import _osv_audit
+
+        inventory = self.inventory(
+            "ubuntu",
+            "24.04",
+            packages=(
+                InstalledPackage(
+                    name="libfoo1",
+                    version="1.2.3-1ubuntu1",
+                    architecture="amd64",
+                    source_name="foo",
+                    source_version="1.2.3-1",
+                ),
+            ),
+        )
+        calls = []
+
+        def fetcher(url, payload=None, **kwargs):
+            calls.append((url, payload))
+            return {"results": [{"vulns": []}]}
+
+        audit = _osv_audit(
+            inventory,
+            "Ubuntu:24.04:LTS",
+            fetcher=fetcher,
+        )
+
+        self.assertEqual(audit.status, "OK")
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(
+            calls[0][1],
+            {
+                "queries": [
+                    {
+                        "package": {
+                            "name": "foo",
+                            "ecosystem": "Ubuntu:24.04:LTS",
+                        },
+                        "version": "1.2.3-1",
+                    }
+                ]
+            },
+        )
 
     def test_osv_exact_version_match_becomes_finding(self):
         inventory = self.inventory("debian", "12")

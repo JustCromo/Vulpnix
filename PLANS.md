@@ -174,7 +174,9 @@ or inconclusive evidence as secure or vulnerable.
 Implemented:
 
 - Read-only installed-package inventory adapters for `pacman`, `dpkg-query`,
-  `rpm`, and `apk`, with normalized package name, version, and architecture.
+  `rpm`, `apk`, and `xbps-query`, with normalized package name, version, and
+  architecture. For dpkg-based systems, source package name/version metadata is
+  also collected when available.
 - Distribution detection from `/etc/os-release`, parsed as data rather than
   executed as shell code.
 - Arch Linux advisory lookup through the official Security Tracker dataset.
@@ -213,8 +215,16 @@ Remaining objectives:
 
 - Further validate source-state handling and affected/fixed-version semantics
   against current real advisory records, including records with a fixed version.
-- Validate OSV package naming, ecosystem mapping, and range handling against
-  the actual supported distributions and their vendor package conventions.
+- Validate OSV package naming, ecosystem mapping, and version-range handling
+  against actual supported distributions and vendor package conventions.
+  Ubuntu queries use `source_name` and `source_version` from `dpkg-query` when
+  both are available. This initial mapping is implemented but is not yet
+  qualified through VM-backed validation; applicability to each installed
+  binary package still requires verification.
+- Investigate advisory detail-fetch failures, the 100-ID detail cap, and
+  `next_page_token` handling. Add fixtures for missing details, incomplete
+  pagination, fixed and unfixed versions, and request failures. Decide any
+  classification changes only after expected outcomes are covered by tests.
 - Expand integration testing beyond the current Arch development host.
 - Keep unsupported sources, failed network requests, and ambiguous results
   explicitly visible in the final assessment.
@@ -348,13 +358,18 @@ change the security assessment itself.
 
 #### Phase 4 — Report formats and release readiness
 
-Once the terminal report and structured review are coherent, evaluate JSON,
-Markdown, and HTML report outputs. Keep rendering separate from collection,
-rules, and risk calculation.
+HTML, Markdown, and JSON report exports are implemented and have automated
+test coverage. Keep rendering separate from collection, rules, and risk
+calculation.
 
-Run the complete suite, verify source-checkout usage from the README, exercise
-rootless and privileged runtime paths, review release hygiene, and complete the
-quality acceptance gates defined in `QUALITY.md`.
+Remaining work:
+- Verify all three exported formats through the real CLI from a clean
+  installation, including full and targeted scans.
+- Confirm output accuracy, sensitive-data handling, file permissions, and
+  unique output paths.
+- Run the complete suite, verify source-checkout usage from the README,
+  exercise rootless and privileged runtime paths, review release hygiene, and
+  complete the quality acceptance gates defined in `QUALITY.md`.
 
 ## Final V1 architecture
 
@@ -387,4 +402,94 @@ Vulpnix Core
 7. Prefer small, testable changes and adversarial tests.
 8. Run the full test suite and `git diff --check` before milestone completion.
 
-**Current focus: M9 — Reporting, CLI UX & Release.** M6 package/CVE correlation, M7 disk/filesystem assessment, and M8 per-finding risk scoring have initial implementations. Formal quality qualification remains pending. Package advisory coverage still needs further validation. Host-wide risk aggregation, baseline/change detection, and report export formats remain deferred or planned.
+**Current focus: M9 — Reporting, CLI UX & Release.** M6 package/CVE correlation, M7 disk/filesystem assessment, and M8 per-finding risk scoring have initial implementations. Formal quality qualification remains pending. Package advisory coverage still needs further validation. HTML, Markdown, and JSON report exports are implemented. Host-wide risk aggregation and baseline/change detection remain planned.
+
+## Prioritized follow-up backlog
+
+This backlog separates release prerequisites from follow-up engineering. Items
+remain planned until their acceptance criteria are met and the evidence is
+recorded. Adding an item here does not imply that its implementation has begun.
+
+### P0 — Release qualification and installation validation
+
+- Test the documented pipx per-user and system-wide installation paths in clean
+  environments. Verify install, command discovery, upgrade, and uninstall using
+  the same paths and configuration.
+- Exercise rootless and privileged CLI workflows in a disposable Linux VM.
+  Verify the documented full scan, targeted scans, and HTML/Markdown/JSON exports.
+- Run the complete automated test suite, applicable static checks, compilation,
+  and `git diff --check`. Record the actual commands and outcomes.
+- Keep quality qualification pending until the applicable `QUALITY.md` criteria
+  have evidence. Do not claim broad distribution support based only on Arch tests.
+
+**Acceptance:** a release record identifies the tested distributions and
+versions, installation methods, test results, known limitations, and unresolved
+quality criteria.
+
+### P1 — Package advisory correctness and coverage
+
+- Validate OSV ecosystem identifiers, source-package mapping, installed binary
+  applicability, version ranges, affected versions, and fixed versions against
+  vendor records and controlled fixtures.
+- Test incomplete advisory details, request failures, pagination tokens, and
+  the 100-advisory detail limit. Ensure report coverage reflects these limits.
+- Add regression fixtures for confirmed matches, non-matches, version ambiguity,
+  and unavailable evidence. Do not treat missing details alone as proof of a
+  vulnerability or proof that a package is safe.
+- Keep this work deferred until explicitly resumed; the current initial query
+  mapping is not equivalent to full validation of package advisory findings.
+
+**Acceptance:** each supported scenario has an expected status and auditable
+evidence; ambiguous or incomplete inputs are handled according to the finding
+semantics in `QUALITY.md`.
+
+### P1 — Cross-distribution integration matrix
+
+- Validate package inventory and CLI behavior on representative systems using
+  `pacman`, `dpkg-query`, `rpm`, `apk`, and `xbps-query` where available.
+- Separately record inventory support, advisory-source support, and successful
+  runtime validation. These are different compatibility claims.
+- Verify behavior when optional utilities, systemd, firewall backends, or
+  sufficient privileges are unavailable.
+
+**Acceptance:** a support matrix records the exact environment, checks run,
+results, and unsupported capabilities. Untested distributions are labelled
+untested rather than qualified.
+
+### P2 — Firewall policy analysis
+
+- Improve analysis across supported nftables and iptables chains, hooks,
+  policies, and forwarding configurations without assuming that a permissive
+  policy proves internet reachability.
+- Add representative fixtures and isolated VM scenarios for common firewall
+  layouts, including cases where the correct result is `REVIEW`.
+
+**Acceptance:** supported cases have explicit positive, negative, and
+inconclusive expectations; unsupported combinations remain visibly unassessed.
+
+### P2 — Installation and distribution options
+
+- Evaluate native distribution packages (for example, an Arch package,
+  Debian package, and RPM package) only after the installation workflow and
+  CLI entry point are stable.
+- Retain pipx as an installation option. Native packages, if implemented, must
+  have documented upgrade and removal paths and must be tested on their target
+  distributions.
+
+**Acceptance:** each published installation method can be installed, invoked,
+upgraded, and removed in a clean target environment, or it remains documented
+as experimental.
+
+### P3 — Larger follow-up features
+
+- Design baseline and change detection with explicit storage, privacy, and
+  comparison semantics before implementing it.
+- Design any host-wide risk aggregation as a separate, explainable model.
+  Do not replace the current maximum eligible per-finding score with a sum
+  or another aggregate without documented rationale and tests.
+- Continue terminal UX refinement only where it improves clarity without
+  changing assessment results.
+
+**Acceptance:** each feature has a written scope, data-handling model,
+acceptance tests, and an explicit decision about whether it belongs in the
+initial V1 release or a later version.

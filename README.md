@@ -11,10 +11,10 @@ validation on real Linux systems before it can be claimed.
 
 ## Installation
 
-Vulpnix can be installed as a system-wide command with
-[pipx](https://pipx.pypa.io/stable/). This works on Linux distributions,
-including Linux distributions running under WSL. Choose the commands matching
-the distribution installed on your machine.
+Vulpnix is a Python command-line application installed with
+[pipx](https://pipx.pypa.io/). Choose a system-wide installation if you need
+to run privileged scans with `sudo vulpnix`, or a per-user installation for
+rootless use.
 
 ### 1. Install pipx and Git
 
@@ -24,7 +24,7 @@ Arch Linux:
 sudo pacman -S python-pipx git
 ```
 
-Debian or recent Ubuntu releases:
+Debian or Ubuntu:
 
 ```bash
 sudo apt update
@@ -37,46 +37,52 @@ Fedora:
 sudo dnf install pipx git
 ```
 
-For other distributions, older releases, or alternative installation methods,
-follow the [official pipx installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html).
+For other distributions or installation methods, follow the
+[official pipx installation guide](https://pipx.pypa.io/latest/how-to/install-pipx.html).
 
-Ensure pipx is available in your terminal. If the installed version supports
-global installations, prepare the global command path with:
+### 2. System-wide installation
+
+The following commands use explicit pipx paths instead of the `--global`
+option. This supports pipx versions that do not recognize `--global`.
+
+Install Vulpnix from the public GitHub repository:
 
 ```bash
+sudo PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin PIPX_MAN_DIR=/usr/local/share/man pipx install 'git+https://github.com/JustCromo/Vulpnix.git'
+```
+
+Update the installation after a new version has been pushed:
+
+```bash
+sudo PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin PIPX_MAN_DIR=/usr/local/share/man pipx upgrade vulpnix
+```
+
+Uninstall Vulpnix:
+
+```bash
+sudo PIPX_HOME=/opt/pipx PIPX_BIN_DIR=/usr/local/bin PIPX_MAN_DIR=/usr/local/share/man pipx uninstall vulpnix
+```
+
+Use the same paths for installation, upgrade, and uninstall. These commands
+assume that `pipx` is installed and available to `sudo`. The executable is
+placed in `/usr/local/bin`, normally available to regular users and `sudo`.
+
+### 3. Per-user installation (rootless use)
+
+For an installation limited to the current user:
+
+```bash
+pipx install 'git+https://github.com/JustCromo/Vulpnix.git'
 pipx ensurepath
-sudo pipx ensurepath --global
 ```
 
-Open a new terminal if your PATH was changed. The global installation below
-requires a pipx version that supports the `--global` option.
+Open a new terminal if `pipx ensurepath` updates your PATH. On many Linux
+systems, the per-user executable directory is `~/.local/bin`.
 
-### 2. Install Vulpnix
-
-Install the latest version from the public GitHub repository:
-
-```bash
-sudo pipx install --global git+https://github.com/JustCromo/Vulpnix.git
-```
-
-### 3. Update Vulpnix
-
-After changes have been pushed to the repository, update the installation:
-
-```bash
-sudo pipx upgrade --global vulpnix
-```
-
-### 4. Uninstall Vulpnix
-
-Remove the global installation with:
-
-```bash
-sudo pipx uninstall --global vulpnix
-```
-
-These commands use pipx's default global paths. Custom pipx configurations
-may use different locations.
+A per-user installation is suitable for rootless use. Do not assume that
+`sudo` can find this installation: `sudo` may use a different PATH, and
+running user-writable application code as root is not recommended. Use the
+system-wide installation above for privileged scans.
 
 ## Run with or without root
 
@@ -119,15 +125,15 @@ be reported.
 help
 info
 version
-scan [--details]
-scan host [--details]
-scan hardening [--details]
-scan network [--details]
-scan users [--details]
-scan service [--details]
-scan ssh [--details]
-scan filesystem [--details]
-scan packages [--details]
+scan [--details] [--format html|markdown|json]
+scan host [--details] [--format html|markdown|json]
+scan hardening [--details] [--format html|markdown|json]
+scan network [--details] [--format html|markdown|json]
+scan users [--details] [--format html|markdown|json]
+scan service [--details] [--format html|markdown|json]
+scan ssh [--details] [--format html|markdown|json]
+scan filesystem [--details] [--format html|markdown|json]
+scan packages [--details] [--format html|markdown|json]
 clear
 exit
 ```
@@ -139,9 +145,13 @@ Unavailable sources and unsupported ecosystems must be reported as incomplete
 or unassessed, never as proof that installed packages are secure.
 
 The terminal output presents an overview, findings, assessment sections, and a
-final result. The reporting milestone will consolidate section outcomes into
-a clearer, action-oriented final review. `--details` expands available evidence
-and inventories without changing the security rules.
+final result. The M9 reporting milestone will continue to refine the default
+report into a clearer, action-oriented final review. `--details` expands
+available evidence and inventories without changing the security rules.
+
+Use `--format html`, `--format markdown`, or `--format json` to save a report.
+The same formats are available for full and targeted scans. Export files are
+saved under `~/vulpnix_reports`. Exporting does not change the assessment rules.
 
 ### What the checks do
 
@@ -292,10 +302,11 @@ python -m venv .venv
 python -m pip install .
 ```
 
-The package declares no Python runtime dependencies. Its build configuration
-requires `setuptools>=68`. Operating-system commands used by individual
-collectors are separate from Python package dependencies. Missing tools or
-unsupported capabilities may cause checks to be reported as unavailable.
+Vulpnix requires Python 3.10 or later and declares the runtime dependency
+`cvss>=3.6,<4.0`. Its build configuration requires `setuptools>=68`.
+Operating-system commands used by individual collectors are separate from
+Python package dependencies. Missing tools or unsupported capabilities may
+cause checks to be reported as unavailable.
 
 Run the automated suite from a source checkout:
 
@@ -315,4 +326,4 @@ See [PLANS.md](PLANS.md). Network socket visibility, interface inventory,
 read-only firewall ruleset collection with preliminary policy analysis, selected
 kernel hardening, SSH host-key metadata, systemd unit metadata, qualitative
 per-finding risk scoring, installed-package inventory, and initial package/CVE
-correlation are implemented. Package advisory coverage remains limited and requires further validation. Initial disk/filesystem assessment and qualitative per-finding risk scoring are implemented, but M5–M8 still require the applicable quality checks described in `QUALITY.md`. Comprehensive firewall-policy validation, baseline/change detection, host-wide risk aggregation, terminal UX refinement, and export formats remain planned work.
+correlation are implemented. Package advisory coverage remains limited and requires further validation. Initial disk/filesystem assessment and qualitative per-finding risk scoring are implemented, but M5–M8 still require the applicable quality checks described in `QUALITY.md`. Comprehensive firewall-policy validation, baseline/change detection, host-wide risk aggregation, and further terminal UX refinement remain planned work. HTML, Markdown, and JSON report exports are implemented; release qualification and cross-distribution validation remain pending.

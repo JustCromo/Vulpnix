@@ -10,6 +10,8 @@ class InstalledPackage:
     name: str
     version: str
     architecture: str | None = None
+    source_name: str | None = None
+    source_version: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

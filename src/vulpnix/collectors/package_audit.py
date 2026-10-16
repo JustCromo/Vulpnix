@@ -738,6 +738,21 @@ def _osv_fixed_version(record: dict[str, Any], package_name: str) -> str | None:
     return None
 
 
+def _osv_query_identity(
+    package: InstalledPackage,
+    ecosystem: str,
+) -> tuple[str, str]:
+    """Use Ubuntu source-package metadata when available."""
+    if (
+        ecosystem.startswith("Ubuntu:")
+        and package.source_name
+        and package.source_version
+    ):
+        return package.source_name, package.source_version
+
+    return package.name, package.version
+
+
 def _osv_audit(inventory: PackageInventory, ecosystem: str, *, fetcher=None) -> PackageAudit:
     if fetcher is None:
         fetcher = _http_json
@@ -756,10 +771,18 @@ def _osv_audit(inventory: PackageInventory, ecosystem: str, *, fetcher=None) -> 
 
     for offset in range(0, len(packages), BATCH_SIZE):
         batch = packages[offset:offset + BATCH_SIZE]
-        queries = [
-            {"package": {"name": package.name, "ecosystem": ecosystem}, "version": package.version}
-            for package in batch
-        ]
+        queries = []
+        for package in batch:
+            query_name, query_version = _osv_query_identity(package, ecosystem)
+            queries.append(
+                {
+                    "package": {
+                        "name": query_name,
+                        "ecosystem": ecosystem,
+                    },
+                    "version": query_version,
+                }
+            )
         try:
             response = fetcher(OSV_QUERYBATCH_URL, {"queries": queries})
         except (OSError, TimeoutError, ValueError, subprocess.SubprocessError) as error:
@@ -829,7 +852,8 @@ def _osv_audit(inventory: PackageInventory, ecosystem: str, *, fetcher=None) -> 
         summary = _clean(record.get("summary") or f"OSV reported vulnerability {advisory_id}.", 900)
         severity, vector = _osv_severity(record)
         cvss_assessments = _osv_cvss_assessments(record, cves)
-        fixed_version = _osv_fixed_version(record, package.name)
+        query_name, _ = _osv_query_identity(package, ecosystem)
+        fixed_version = _osv_fixed_version(record, query_name)
         refs = record.get("references", [])
         source = f"https://osv.dev/vulnerability/{quote(advisory_id, safe='-._')}"
         if isinstance(refs, list):
