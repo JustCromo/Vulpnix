@@ -17,7 +17,8 @@ from vulpnix.collectors.hardening import collect_sysctl_observations
 from vulpnix.collectors.network import collect_network_snapshot
 from vulpnix.collectors.ssh_keys import collect_ssh_host_key_metadata
 from vulpnix.collectors.systemd_security import collect_service_unit_file_metadata
-from vulpnix.findings import Finding
+from vulpnix.findings import Finding, FindingStatus
+from vulpnix.parsers.systemd import UNIT_FILE_NON_BOOLEAN_STATES
 from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
 from vulpnix.models import (
     FileMetadataResult,
@@ -91,7 +92,19 @@ class ScanOrchestrator:
 
     @staticmethod
     def _service_review_items(services: tuple[Service, ...]) -> int:
-        return sum(service.enabled is None or service.state in {"unknown", ""} for service in services)
+        def needs_review(service: Service) -> bool:
+            unit_state = (service.unit_file_state or "").strip().lower()
+            state_unknown = (
+                service.state is not None
+                and service.state.strip().lower() in {"unknown", ""}
+            )
+            enablement_unknown = (
+                service.enabled is None
+                and unit_state not in UNIT_FILE_NON_BOOLEAN_STATES
+            )
+            return state_unknown or enablement_unknown
+
+        return sum(needs_review(service) for service in services)
 
     def run_host(self, *, collector: HostCollector = collect_system_info, section_builder: HostSectionBuilder) -> ScanResult:
         self._emit(ScanStage.STARTING, "Starting host assessment")
@@ -157,8 +170,27 @@ class ScanOrchestrator:
         except (OSError, UnicodeError, ValueError) as error:
             self._emit(ScanStage.ERROR, f"SSH assessment failed: {error}")
             raise
+        review_items = sum(
+            finding.status in {
+                FindingStatus.REVIEW,
+                FindingStatus.NOT_ASSESSED,
+                FindingStatus.ERROR,
+            }
+            for finding in findings
+        )
+        coverage = (
+            AssessmentCoverage.PARTIAL
+            if review_items
+            else AssessmentCoverage.COMPLETE
+        )
         self._emit(ScanStage.COMPLETED, "SSH assessment completed")
-        return self._result(sections=(section,), findings=findings, scope=("SSH configuration",))
+        return self._result(
+            sections=(section,),
+            findings=findings,
+            scope=("SSH configuration",),
+            coverage=coverage,
+            review_items=review_items,
+        )
 
     def run_filesystem(self, *, section_builder: FilesystemSectionBuilder, sensitive_file_collector: Callable[[], tuple[FileMetadataResult, ...]] = collect_sensitive_file_metadata, sensitive_file_assessor: Callable[[tuple[FileMetadataResult, ...]], FilesystemAssessment] = assess_sensitive_files, setid_collector: Callable[[], FilesystemCoverage] = collect_setid_files, setid_assessor: Callable[[FilesystemCoverage], SetIdAssessment] = assess_setid_files) -> ScanResult:
         self._emit(ScanStage.STARTING, "Starting filesystem assessment")

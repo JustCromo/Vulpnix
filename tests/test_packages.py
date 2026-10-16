@@ -13,6 +13,7 @@ from vulpnix.collectors.packages import (
     read_os_release,
 )
 from vulpnix.collectors.package_audit import (
+    _nvd_cvss_for_cves,
     _osv_ecosystem,
     _version_compare_arch,
     collect_package_audit,
@@ -206,6 +207,55 @@ class PackageAuditTests(unittest.TestCase):
 
         # Never invent a product-stream CPE for a generic RHEL install.
         self.assertIsNone(_osv_ecosystem(self.inventory("rhel", "9")))
+
+    def test_nvd_duplicate_vectors_merge_sources_without_losing_distinct_scores(self):
+        cve_id = "CVE-2099-54321"
+        same_vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H"
+        distinct_vector = "CVSS:3.1/AV:N/AC:L/PR:N/UI:R/S:U/C:H/I:N/A:H"
+
+        response = {
+            "vulnerabilities": [{
+                "cve": {
+                    "id": cve_id,
+                    "metrics": {
+                        "cvssMetricV31": [
+                            {
+                                "source": "cve@vendor.example",
+                                "cvssData": {"vectorString": same_vector},
+                            },
+                            {
+                                "source": "nvd@nist.gov",
+                                "cvssData": {"vectorString": same_vector},
+                            },
+                            {
+                                "source": "nvd@nist.gov",
+                                "cvssData": {"vectorString": distinct_vector},
+                            },
+                        ],
+                    },
+                },
+            }],
+        }
+
+        with patch("vulpnix.collectors.package_audit._NVD_CVSS_CACHE", {}):
+            scores_by_cve, messages = _nvd_cvss_for_cves(
+                (cve_id,),
+                fetcher=lambda _: response,
+                sleeper=lambda _: None,
+            )
+
+        scores = scores_by_cve[cve_id]
+        self.assertEqual(messages, ())
+        self.assertEqual(len(scores), 2)
+
+        same_score = next(score for score in scores if score.vector == same_vector)
+        self.assertIn("cve@vendor.example", same_score.source)
+        self.assertIn("nvd@nist.gov", same_score.source)
+        self.assertEqual(
+            same_score.source,
+            "NVD (cve@vendor.example; nvd@nist.gov)",
+        )
+        self.assertTrue(any(score.vector == distinct_vector for score in scores))
 
     def test_arch_version_compare_requires_native_vercmp(self):
         self.assertIsNone(_version_compare_arch("1.0", "1.1", which=lambda _: None))

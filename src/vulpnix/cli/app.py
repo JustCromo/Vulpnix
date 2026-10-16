@@ -31,6 +31,7 @@ from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
 from vulpnix.collectors.package_audit import collect_package_audit
 from vulpnix.collectors.packages import collect_package_inventory
 from vulpnix.collectors.storage import collect_storage_snapshot
+from vulpnix.parsers.systemd import UNIT_FILE_NON_BOOLEAN_STATES
 from vulpnix.models.storage import StorageStatus
 from vulpnix.rules.storage import assess_storage
 from vulpnix.models import (
@@ -1643,7 +1644,13 @@ def _service_report_section(services: tuple[Service, ...], *, detailed: bool = F
     other_state = len(services) - active - inactive
     enabled = sum(service.enabled is True for service in services)
     disabled = sum(service.enabled is False for service in services)
-    unknown_enabled = len(services) - enabled - disabled
+    non_boolean_enabled = sum(
+        service.enabled is None
+        and (service.unit_file_state or "").strip().lower()
+        in UNIT_FILE_NON_BOOLEAN_STATES
+        for service in services
+    )
+    unknown_enabled = len(services) - enabled - disabled - non_boolean_enabled
     startup_services = tuple(
         _display_value(service.name)
         for service in services
@@ -1662,7 +1669,11 @@ def _service_report_section(services: tuple[Service, ...], *, detailed: bool = F
         facts=(
             ("Units", str(len(services))),
             ("State", f"{active} active · {inactive} inactive · {other_state} other/unknown"),
-            ("Startup enabled", f"{enabled} yes · {disabled} no · {unknown_enabled} unknown"),
+            (
+                "Startup enabled",
+                f"{enabled} yes · {disabled} no · "
+                f"{non_boolean_enabled} non-boolean · {unknown_enabled} unknown",
+            ),
         ),
         items=items,
         items_label=("Active now and enabled to start at boot:" if startup_services else None),

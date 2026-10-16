@@ -1,5 +1,17 @@
 """Parsers for systemd command output."""
 
+# Valid unit-file states that describe how a unit is enabled, but do not map
+# to a boolean enabled/disabled value.
+UNIT_FILE_NON_BOOLEAN_STATES = frozenset({
+    "static",
+    "indirect",
+    "generated",
+    "transient",
+    "alias",
+    "linked",
+    "linked-runtime",
+})
+
 
 def parse_loaded_services(output: str) -> dict[str, str]:
     """Parse service names and active states from systemctl's unit list."""

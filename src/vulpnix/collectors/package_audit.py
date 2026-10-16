@@ -381,8 +381,11 @@ def _nvd_cvss_for_cves(
         batch_scores: dict[str, list[CVSSScore]] = {
             cve_id: [] for cve_id in batch
         }
-        seen: dict[str, set[tuple[str, str, str | None]]] = {
-            cve_id: set() for cve_id in batch
+        seen: dict[str, dict[tuple[str, str], int]] = {
+            cve_id: {} for cve_id in batch
+        }
+        seen_sources: dict[str, dict[tuple[str, str], set[str]]] = {
+            cve_id: {} for cve_id in batch
         }
 
         for item in vulnerabilities:
@@ -423,18 +426,33 @@ def _nvd_cvss_for_cves(
                         or record.get("sourceIdentifier")
                         or "NVD"
                     )
+                    source_label = _clean(source_label, 100) or "NVD"
                     result = calculate_cvss(
                         vector,
                         declared_type=declared_type,
-                        source=f"NVD ({_clean(source_label, 100)})",
+                        source=f"NVD ({source_label})",
                     )
                     if result is None:
                         continue
 
-                    key = (result.version, result.vector, result.source)
+                    # Identical version + vector means the same assessment,
+                    # even when NVD lists multiple sources for that metric.
+                    key = (result.version, result.vector)
                     if key not in seen[cve_id]:
+                        seen[cve_id][key] = len(batch_scores[cve_id])
+                        seen_sources[cve_id][key] = {source_label}
                         batch_scores[cve_id].append(result)
-                        seen[cve_id].add(key)
+                    else:
+                        seen_sources[cve_id][key].add(source_label)
+                        source_names = "; ".join(sorted(seen_sources[cve_id][key]))
+                        index = seen[cve_id][key]
+                        batch_scores[cve_id][index] = CVSSScore(
+                            version=result.version,
+                            base_score=result.base_score,
+                            severity=result.severity,
+                            vector=result.vector,
+                            source=f"NVD ({source_names})",
+                        )
 
         cached_at = time.monotonic()
         for cve_id in batch:

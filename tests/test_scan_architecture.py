@@ -10,6 +10,63 @@ from vulpnix.scan.privilege import PrivilegeContext
 
 
 class ScanArchitectureTests(unittest.TestCase):
+    def test_ssh_review_finding_marks_result_as_partial(self):
+        from vulpnix.findings import Finding, FindingStatus
+
+        finding = Finding(
+            rule_id="SSH-TEST-001",
+            title="SSH password authentication needs review",
+            evidence="Password authentication is enabled",
+            explanation="Review whether password login is required.",
+            recommendation="Prefer key-based authentication where appropriate.",
+            status=FindingStatus.REVIEW,
+        )
+
+        result = ScanOrchestrator().run_ssh(
+            section_builder=lambda _: ReportSection("SSH"),
+            findings_builder=lambda _: (finding,),
+            ssh_collector=lambda: object(),
+        )
+
+        self.assertEqual(result.coverage, AssessmentCoverage.PARTIAL)
+        self.assertEqual(result.review_items, 1)
+        self.assertEqual(result.findings, (finding,))
+
+    def test_known_non_boolean_unit_states_are_not_counted_as_unknown(self):
+        from vulpnix.cli.app import _service_report_section
+        from vulpnix.models import Service
+
+        services = (
+            Service(
+                name="static.service",
+                state="inactive",
+                enabled=None,
+                unit_file_state="static",
+            ),
+            Service(
+                name="generated.service",
+                state="active",
+                enabled=None,
+                unit_file_state="generated",
+            ),
+            Service(
+                name="unknown.service",
+                state="active",
+                enabled=None,
+                unit_file_state="unknown",
+            ),
+        )
+
+        self.assertEqual(
+            ScanOrchestrator._service_review_items(services),
+            1,
+        )
+        facts = dict(_service_report_section(services).facts)
+        self.assertEqual(
+            facts["Startup enabled"],
+            "0 yes · 0 no · 2 non-boolean · 1 unknown",
+        )
+
     def test_services_subprocess_failure_emits_error_and_propagates(self):
         import subprocess
 
