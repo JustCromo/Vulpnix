@@ -6,11 +6,13 @@ import json
 import re
 import shutil
 import subprocess
+import time
 from typing import Any
-from urllib.parse import quote
+from urllib.parse import quote, urlencode
 from urllib.request import Request, urlopen
 
-from vulpnix.findings import Finding, FindingStatus
+from vulpnix.cvss import calculate_cvss
+from vulpnix.findings import CVEAssessment, CVSSScore, Finding, FindingStatus
 from vulpnix.models.packages import (
     InstalledPackage,
     PackageAudit,
@@ -26,6 +28,11 @@ MAX_RESPONSE_BYTES = 24 * 1024 * 1024
 BATCH_SIZE = 100
 MAX_OSV_PACKAGES = 2500
 MAX_ADVISORY_DETAILS = 100
+
+NVD_CVES_URL = "https://services.nvd.nist.gov/rest/json/cves/2.0"
+NVD_BATCH_SIZE = 100
+NVD_CACHE_TTL_SECONDS = 6 * 60 * 60
+_NVD_CVSS_CACHE: dict[str, tuple[float, tuple[CVSSScore, ...]]] = {}
 
 SEVERITY_IMPACT = {
     "LOW": 2,
@@ -197,6 +204,7 @@ def _finding(
     status: FindingStatus,
     *,
     cvss_vector: str | None = None,
+    cvss_assessments: tuple[CVEAssessment, ...] | None = None,
     status_detail: str = "",
 ) -> Finding:
     displayed_id = ", ".join(identifiers) if identifiers else advisory_id
@@ -237,6 +245,14 @@ def _finding(
             f"{summary}"
         )
 
+    if cvss_assessments is None:
+        # Keep CVE identifiers visible even when their CVSS vector is absent.
+        cvss_assessments = tuple(
+            CVEAssessment(cve_id=identifier)
+            for identifier in identifiers
+            if re.fullmatch(r"CVE-\d{4}-\d+", identifier)
+        )
+
     return Finding(
         rule_id=f"PACKAGE-CVE-{_slug(advisory_id)}-{_slug(package.name)}",
         title=title,
@@ -248,7 +264,144 @@ def _finding(
         impact=impact,
         probability=probability,
         risk_rationale=rationale,
+        cves=cvss_assessments,
     )
+
+
+
+def _nvd_cvss_for_cves(
+    cve_ids: tuple[str, ...],
+    *,
+    fetcher=None,
+    sleeper=None,
+) -> tuple[dict[str, tuple[CVSSScore, ...]], tuple[str, ...]]:
+    """Retrieve and cache source-provided NVD CVSS vectors in bounded batches."""
+    if fetcher is None:
+        fetcher = _http_json
+    if sleeper is None:
+        sleeper = time.sleep
+
+    identifiers = tuple(sorted({
+        value.strip()
+        for value in cve_ids
+        if isinstance(value, str)
+        and re.fullmatch(r"CVE-\d{4}-\d+", value.strip())
+    }))
+
+    scores_by_cve: dict[str, tuple[CVSSScore, ...]] = {}
+    pending: list[str] = []
+    now = time.monotonic()
+
+    for cve_id in identifiers:
+        cached = _NVD_CVSS_CACHE.get(cve_id)
+        if cached is not None and 0 <= now - cached[0] < NVD_CACHE_TTL_SECONDS:
+            scores_by_cve[cve_id] = cached[1]
+        else:
+            _NVD_CVSS_CACHE.pop(cve_id, None)
+            pending.append(cve_id)
+
+    messages: list[str] = []
+    metric_types = (
+        ("cvssMetricV40", "CVSS_V4"),
+        ("cvssMetricV31", "CVSS_V3"),
+        ("cvssMetricV30", "CVSS_V3"),
+        ("cvssMetricV2", "CVSS_V2"),
+    )
+
+    for batch_index, offset in enumerate(range(0, len(pending), NVD_BATCH_SIZE)):
+        batch = pending[offset:offset + NVD_BATCH_SIZE]
+
+        # NVD recommends approximately six seconds between public API requests.
+        if batch_index:
+            sleeper(6.1)
+
+        query = urlencode({
+            "cveIds": ",".join(batch),
+            "resultsPerPage": str(len(batch)),
+        })
+        url = f"{NVD_CVES_URL}?{query}"
+
+        try:
+            response = fetcher(url)
+        except (OSError, TimeoutError, ValueError, subprocess.SubprocessError) as error:
+            messages.append(
+                f"NVD CVSS batch {batch_index + 1} unavailable: {type(error).__name__}."
+            )
+            continue
+
+        vulnerabilities = (
+            response.get("vulnerabilities")
+            if isinstance(response, dict)
+            else None
+        )
+        if not isinstance(vulnerabilities, list):
+            continue
+
+        batch_scores: dict[str, list[CVSSScore]] = {
+            cve_id: [] for cve_id in batch
+        }
+        seen: dict[str, set[tuple[str, str, str | None]]] = {
+            cve_id: set() for cve_id in batch
+        }
+
+        for item in vulnerabilities:
+            if not isinstance(item, dict):
+                continue
+
+            record = item.get("cve")
+            if not isinstance(record, dict):
+                continue
+
+            cve_id = record.get("id")
+            if not isinstance(cve_id, str) or cve_id not in batch_scores:
+                continue
+
+            metrics = record.get("metrics")
+            if not isinstance(metrics, dict):
+                continue
+
+            for metric_name, declared_type in metric_types:
+                entries = metrics.get(metric_name, [])
+                if not isinstance(entries, list):
+                    continue
+
+                for metric in entries:
+                    if not isinstance(metric, dict):
+                        continue
+
+                    cvss_data = metric.get("cvssData")
+                    if not isinstance(cvss_data, dict):
+                        continue
+
+                    vector = cvss_data.get("vectorString")
+                    if not isinstance(vector, str):
+                        continue
+
+                    source_label = (
+                        metric.get("source")
+                        or record.get("sourceIdentifier")
+                        or "NVD"
+                    )
+                    result = calculate_cvss(
+                        vector,
+                        declared_type=declared_type,
+                        source=f"NVD ({_clean(source_label, 100)})",
+                    )
+                    if result is None:
+                        continue
+
+                    key = (result.version, result.vector, result.source)
+                    if key not in seen[cve_id]:
+                        batch_scores[cve_id].append(result)
+                        seen[cve_id].add(key)
+
+        cached_at = time.monotonic()
+        for cve_id in batch:
+            scores = tuple(batch_scores[cve_id])
+            scores_by_cve[cve_id] = scores
+            _NVD_CVSS_CACHE[cve_id] = (cached_at, scores)
+
+    return scores_by_cve, tuple(messages)
 
 
 def _arch_tracker_audit(
@@ -279,6 +432,44 @@ def _arch_tracker_audit(
     findings: list[Finding] = []
     messages: list[str] = []
     unresolved = 0
+
+    # Fetch CVSS only for CVEs belonging to advisories that mention installed
+    # packages. The feed's advisory severity is deliberately not copied to CVEs.
+    installed_names = set(installed)
+    cve_candidates: set[str] = set()
+
+    for candidate in records:
+        candidate_state = str(candidate.get("status") or "Unknown").strip().lower()
+        if candidate_state not in {"vulnerable", "unknown", "testing"}:
+            continue
+
+        raw_candidate_names = candidate.get("packages", [])
+        candidate_names = (
+            (raw_candidate_names,)
+            if isinstance(raw_candidate_names, str)
+            else raw_candidate_names
+        )
+        if not isinstance(candidate_names, (list, tuple)):
+            continue
+        if not any(
+            isinstance(name, str) and name in installed_names
+            for name in candidate_names
+        ):
+            continue
+
+        raw_issues = candidate.get("issues", [])
+        if isinstance(raw_issues, list):
+            for issue in raw_issues:
+                if isinstance(issue, str):
+                    cve_id = issue.strip()
+                    if re.fullmatch(r"CVE-\d{4}-\d+", cve_id):
+                        cve_candidates.add(cve_id)
+
+    cvss_by_cve, cvss_messages = _nvd_cvss_for_cves(
+        tuple(sorted(cve_candidates)),
+        fetcher=fetcher,
+    )
+    messages.extend(cvss_messages)
 
     for record in records:
         advisory_id = str(record.get("name") or "")
@@ -368,10 +559,19 @@ def _arch_tracker_audit(
                         )
 
             summary = _clean(record.get("type") or "Distribution security advisory.")
+            cvss_assessments = tuple(
+                CVEAssessment(
+                    cve_id=cve_id,
+                    cvss=cvss_by_cve.get(cve_id, ()),
+                )
+                for cve_id in cves
+            )
             findings.append(
                 _finding(
                     package, advisory_id, cves, severity or None, summary,
-                    fixed_version, source, status, status_detail=status_detail,
+                    fixed_version, source, status,
+                    cvss_assessments=cvss_assessments,
+                    status_detail=status_detail,
                 )
             )
             if status is not FindingStatus.FAIL:
@@ -408,6 +608,50 @@ def _osv_severity(record: dict[str, Any]) -> tuple[str | None, str | None]:
                 vector = score
                 break
     return severity, vector
+
+
+def _osv_cvss_assessments(
+    record: dict[str, Any],
+    cve_ids: tuple[str, ...],
+) -> tuple[CVEAssessment, ...]:
+    """Calculate CVSS from the source-provided OSV vectors for each CVE alias."""
+    raw_severity = record.get("severity")
+    if not isinstance(raw_severity, list) or not cve_ids:
+        return tuple(CVEAssessment(cve_id=cve_id) for cve_id in cve_ids)
+
+    scores: list = []
+    seen: set[tuple[str, str]] = set()
+
+    for entry in raw_severity:
+        if not isinstance(entry, dict):
+            continue
+
+        vector = entry.get("score")
+        declared_type = entry.get("type")
+        if not isinstance(vector, str):
+            continue
+        if declared_type is not None and not isinstance(declared_type, str):
+            continue
+
+        result = calculate_cvss(
+            vector,
+            declared_type=declared_type,
+            source="OSV.dev",
+        )
+        if result is None:
+            continue
+
+        key = (result.version, result.vector)
+        if key not in seen:
+            scores.append(result)
+            seen.add(key)
+
+    # An OSV record may have several CVE aliases. Preserve the assessment on
+    # each alias rather than collapsing distinct identifiers into one string.
+    return tuple(
+        CVEAssessment(cve_id=cve_id, cvss=tuple(scores))
+        for cve_id in cve_ids
+    )
 
 
 def _osv_fixed_version(record: dict[str, Any], package_name: str) -> str | None:
@@ -525,6 +769,7 @@ def _osv_audit(inventory: PackageInventory, ecosystem: str, *, fetcher=None) -> 
 
         summary = _clean(record.get("summary") or f"OSV reported vulnerability {advisory_id}.", 900)
         severity, vector = _osv_severity(record)
+        cvss_assessments = _osv_cvss_assessments(record, cves)
         fixed_version = _osv_fixed_version(record, package.name)
         refs = record.get("references", [])
         source = f"https://osv.dev/vulnerability/{quote(advisory_id, safe='-._')}"
@@ -537,7 +782,10 @@ def _osv_audit(inventory: PackageInventory, ecosystem: str, *, fetcher=None) -> 
         findings.append(
             _finding(
                 package, advisory_id, cves, severity, summary, fixed_version,
-                source, FindingStatus.FAIL, cvss_vector=vector,
+                source,
+                FindingStatus.FAIL,
+                cvss_vector=vector,
+                cvss_assessments=cvss_assessments,
                 status_detail="OSV query matched the installed package version",
             )
         )

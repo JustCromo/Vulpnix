@@ -144,6 +144,7 @@ _STATUS_RGB = {
     "NOT_ASSESSED": (166, 173, 186),
     "ERROR": (255, 112, 112),
     "LOW": (134, 239, 172),
+    "MEDIUM": (255, 205, 128),
     "MODERATE": (255, 205, 128),
     "HIGH": (255, 151, 97),
     "CRITICAL": (255, 112, 112),
@@ -431,11 +432,6 @@ def _append_final_finding_summary(lines, report, width):
         if _finding_status(finding) in {"REVIEW", "NOT_ASSESSED", "ERROR"}
     ]
 
-    assessment = report.risk_assessment or assess_findings(report.findings)
-    risk_by_rule = {item.rule_id: item for item in assessment.scored}
-    unscored_rules = {
-        finding.rule_id for finding in assessment.unscored_verified
-    }
 
     if verified:
         lines.append("")
@@ -455,24 +451,6 @@ def _append_final_finding_summary(lines, report, width):
                 status="FAIL",
                 bold=True,
             ))
-
-            risk = risk_by_rule.get(finding.rule_id)
-            if risk is not None:
-                level = getattr(risk.level, "value", risk.level)
-                lines.extend(_wrap("Risk:", content_width, indent="    "))
-                lines.extend(_color_wrapped(
-                    f"{level} ({risk.score}/25)",
-                    content_width,
-                    indent="      ",
-                    status=_risk_status(level),
-                    bold=True,
-                ))
-            elif finding.rule_id in unscored_rules:
-                lines.extend(_wrap(
-                    "Risk: unavailable; no complete valid risk profile.",
-                    content_width,
-                    indent="    ",
-                ))
 
             recommendation = str(finding.recommendation or "").strip()
             if recommendation:
@@ -656,6 +634,64 @@ def _finding_details(findings: tuple[Finding, ...], width: int) -> list[str]:
                     width - 4,
                     indent="    ",
                 ))
+        for cve in getattr(finding, "cves", ()):
+            cve_id = _safe(getattr(cve, "cve_id", ""))
+            cvss_scores = getattr(cve, "cvss", ())
+
+            if not cvss_scores:
+                label = f"{cve_id} · CVSS unavailable" if cve_id else (
+                    "CVSS unavailable (no valid vector recorded)"
+                )
+                lines.extend(_color_wrapped(
+                    label,
+                    width - 4,
+                    indent="    ",
+                    status="NOT_ASSESSED",
+                    bold=True,
+                ))
+                continue
+
+            for score in cvss_scores:
+                version = _safe(getattr(score, "version", "unknown"))
+                base_score = float(score.base_score)
+                severity = str(
+                    getattr(getattr(score, "severity", ""), "value",
+                            getattr(score, "severity", ""))
+                    or ""
+                ).strip().upper()
+
+                color_status = (
+                    severity
+                    if severity in {"LOW", "MEDIUM", "MODERATE", "HIGH", "CRITICAL"}
+                    else "NOT_ASSESSED"
+                )
+                label = f"{cve_id} · " if cve_id else ""
+                label += f"CVSS {version}: {base_score:.1f} · {severity or 'UNKNOWN'}"
+
+                lines.extend(_color_wrapped(
+                    label,
+                    width - 4,
+                    indent="    ",
+                    status=color_status,
+                    bold=True,
+                ))
+
+                source = getattr(score, "source", None)
+                if source:
+                    lines.extend(_wrap(
+                        f"CVSS source: {_safe(source)}",
+                        width - 8,
+                        indent="        ",
+                    ))
+
+                vector = getattr(score, "vector", None)
+                if vector:
+                    lines.extend(_wrap(
+                        f"CVSS vector: {_safe(vector)}",
+                        width - 8,
+                        indent="        ",
+                    ))
+
         lines.extend(_wrap(f"Evidence: {finding.evidence}", width - 4, indent="    "))
         lines.extend(_wrap("Why it matters:", width - 4, indent="    "))
         lines.extend(_wrap(finding.explanation, width - 6, indent="      "))

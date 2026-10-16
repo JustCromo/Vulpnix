@@ -6,7 +6,12 @@ from dataclasses import replace
 from vulpnix.cli.html_report import render_html_report, save_html_report
 from vulpnix.cli.report import ReportSection, ScanReport
 from vulpnix.cli.summary import AssessmentCoverage
-from vulpnix.findings import Finding, FindingStatus
+from vulpnix.findings import (
+    CVEAssessment,
+    CVSSScore,
+    Finding,
+    FindingStatus,
+)
 from vulpnix.models import SystemInfo
 from vulpnix.risk.engine import assess_findings
 
@@ -97,6 +102,66 @@ class HTMLReportTests(unittest.TestCase):
         self.assertIn("Controlled risk rationale.", html)
         self.assertIn("Review this controlled finding.", html)
         self.assertIn("Verified issues", html)
+
+    def test_cve_cvss_badges_are_color_coded_and_missing_scores_stay_neutral(self):
+        base = sample_report()
+        severity_cases = (
+            ("CVE-2025-10001", "LOW", 2.9),
+            ("CVE-2025-10002", "MEDIUM", 5.5),
+            ("CVE-2025-10003", "HIGH", 8.1),
+            ("CVE-2025-10004", "CRITICAL", 9.8),
+        )
+        cves = [
+            CVEAssessment(
+                cve_id=cve_id,
+                cvss=(
+                    CVSSScore(
+                        version="3.1",
+                        base_score=score,
+                        severity=severity,
+                        vector=(
+                            "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/"
+                            "S:U/C:H/I:H/A:H"
+                        ),
+                        source="OSV.dev",
+                    ),
+                ),
+            )
+            for cve_id, severity, score in severity_cases
+        ]
+        cves.append(CVEAssessment(cve_id="CVE-2025-99999"))
+
+        finding = Finding(
+            rule_id="PACKAGE-CVE-CVSS-TEST",
+            title="Package vulnerability with multiple CVEs",
+            evidence="Controlled test evidence.",
+            explanation="Test explanation.",
+            recommendation="Update the affected package.",
+            status=FindingStatus.FAIL,
+            severity="HIGH",
+            cves=tuple(cves),
+        )
+        report = replace(
+            base,
+            findings=(finding,),
+            risk_assessment=assess_findings((finding,)),
+        )
+
+        html = render_html_report(report)
+
+        for cve_id, severity, score in severity_cases:
+            with self.subTest(severity=severity):
+                self.assertIn(cve_id, html)
+                self.assertIn(
+                    f"cvss-chip--{severity.lower()}",
+                    html,
+                )
+                self.assertIn(f"{score:.1f} {severity}", html)
+
+        self.assertIn("CVE-2025-99999 · CVSS unavailable", html)
+        self.assertIn("cvss-chip--unknown", html)
+        self.assertIn("CVSS:3.1/AV:N/AC:L/PR:N/UI:N/S:U/C:H/I:H/A:H", html)
+        self.assertIn("Source:</strong> OSV.dev", html)
 
     def test_area_titles_are_neutral_but_fact_values_use_semantic_status(self):
         html = render_html_report(sample_report())

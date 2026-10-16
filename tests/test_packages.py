@@ -225,5 +225,61 @@ class PackageAuditTests(unittest.TestCase):
         self.assertIn("1.2-1", audit.findings[0].recommendation)
 
 
+    def test_osv_cve_keeps_calculated_cvss_separate_from_advisory_severity(self):
+        responses = [
+            {"results": [{"vulns": [{"id": "GHSA-demo"}]}]},
+            {
+                "id": "GHSA-demo",
+                "summary": "Demo package issue",
+                "aliases": ["CVE-2025-12345"],
+                "database_specific": {"severity": "HIGH"},
+                "severity": [{
+                    "type": "CVSS_V3",
+                    "score": (
+                        "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/"
+                        "S:U/C:H/I:H/A:H"
+                    ),
+                }],
+                "affected": [{
+                    "package": {"name": "demo", "ecosystem": "Debian:12"},
+                    "ranges": [{"events": [
+                        {"introduced": "0"},
+                        {"fixed": "1.2-1"},
+                    ]}],
+                }],
+                "references": [{
+                    "type": "ADVISORY",
+                    "url": "https://example.invalid/advisory",
+                }],
+            },
+        ]
+
+        def fetcher(url, payload=None, **kwargs):
+            return responses.pop(0)
+
+        from vulpnix.collectors.package_audit import _osv_audit
+
+        audit = _osv_audit(
+            self.inventory("debian", "12"),
+            "Debian:12",
+            fetcher=fetcher,
+        )
+
+        self.assertEqual(len(audit.findings), 1)
+        finding = audit.findings[0]
+
+        # Source label and calculated CVSS are deliberately separate.
+        self.assertEqual(finding.severity, "HIGH")
+        self.assertEqual(len(finding.cves), 1)
+        self.assertEqual(finding.cves[0].cve_id, "CVE-2025-12345")
+        self.assertEqual(len(finding.cves[0].cvss), 1)
+
+        assessment = finding.cves[0].cvss[0]
+        self.assertEqual(assessment.version, "3.1")
+        self.assertEqual(assessment.base_score, 9.8)
+        self.assertEqual(assessment.severity, "CRITICAL")
+        self.assertEqual(assessment.source, "OSV.dev")
+        self.assertTrue(assessment.vector.startswith("CVSS:3.1/"))
+
 if __name__ == "__main__":
     unittest.main()

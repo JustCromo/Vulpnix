@@ -11,7 +11,12 @@ from vulpnix.cli import app
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
 from vulpnix.cli.terminal import accent, color, display_width
-from vulpnix.findings import Finding, FindingStatus
+from vulpnix.findings import (
+    CVEAssessment,
+    CVSSScore,
+    Finding,
+    FindingStatus,
+)
 from vulpnix.risk import assess_findings
 from vulpnix.risk.engine import assess_host_risk
 from vulpnix.models import SSHConfig, Service, SystemInfo, ListeningEndpoint, NetworkSnapshot
@@ -125,6 +130,47 @@ class ScanReportLayoutTests(unittest.TestCase):
         self.assertNotIn("Risk score", joined)
         self.assertIn("[REVIEW]", joined)
         self.assertIn("SSH-PASSWORD-AUTH-001", joined)
+
+    def test_cve_cvss_metadata_is_shown_in_finding_details(self) -> None:
+        finding = Finding(
+            rule_id="PACKAGE-CVE-TEST",
+            title="Example package has a vulnerability",
+            evidence="Matched installed package version.",
+            explanation="Controlled CVE/CVSS test.",
+            recommendation="Update the affected package.",
+            status=FindingStatus.FAIL,
+            severity="HIGH",
+            cves=(
+                CVEAssessment(
+                    cve_id="CVE-2025-12345",
+                    cvss=(
+                        CVSSScore(
+                            version="3.1",
+                            base_score=9.8,
+                            severity="CRITICAL",
+                            vector=(
+                                "CVSS:3.1/AV:N/AC:L/PR:N/UI:N/"
+                                "S:U/C:H/I:H/A:H"
+                            ),
+                            source="OSV.dev",
+                        ),
+                    ),
+                ),
+                CVEAssessment(cve_id="CVE-2025-67890"),
+            ),
+        )
+        report = replace(sample_report(), findings=(finding,))
+        lines = render_scan_report(report, 80)
+        joined = "\n".join(lines)
+        normalized = re.sub(r"\\s+", " ", joined)
+
+        self.assertIn("CVE-2025-12345", normalized)
+        self.assertIn("CVSS 3.1: 9.8 · CRITICAL", normalized)
+        self.assertIn("CVSS source: OSV.dev", normalized)
+        self.assertIn("CVSS vector:", normalized)
+        self.assertIn("CVE-2025-67890", normalized)
+        self.assertIn("CVSS unavailable", normalized)
+        self.assertTrue(all(display_width(line) <= 80 for line in lines))
 
     def test_attention_is_compact_and_rule_details_are_not_repeated(self) -> None:
         lines = self.render(80)
@@ -364,6 +410,72 @@ class FullScanWidthTests(unittest.TestCase):
             "Disable SSH password authentication unless required.",
             rendered,
         )
+
+    def test_final_result_keeps_host_score_without_repeating_finding_risk(self) -> None:
+        base = sample_report()
+        finding = replace(
+            base.findings[0],
+            status=FindingStatus.FAIL,
+            impact=3,
+            probability=3,
+            risk_rationale="Controlled test profile.",
+        )
+        report = replace(
+            base,
+            findings=(finding,),
+            risk_assessment=assess_findings((finding,)),
+            details=False,
+        )
+
+        rendered = "\\n".join(render_scan_report(report, 80))
+
+        self.assertIn("Observed host risk score: 9/25", rendered)
+        self.assertNotIn("Risk:", rendered)
+        self.assertNotIn("MODERATE (9/25)", rendered)
+
+    def test_each_cve_uses_its_own_cvss_severity_color(self) -> None:
+        base = sample_report()
+        severities = (
+            ("CVE-2025-10001", "LOW", 2.9),
+            ("CVE-2025-10002", "MEDIUM", 5.5),
+            ("CVE-2025-10003", "HIGH", 8.1),
+            ("CVE-2025-10004", "CRITICAL", 9.8),
+        )
+        cves = tuple(
+            CVEAssessment(
+                cve_id=cve_id,
+                cvss=(
+                    CVSSScore(
+                        version="3.1",
+                        base_score=score,
+                        severity=severity,
+                        vector=f"CVSS:3.1/test-{severity.lower()}",
+                        source="Test fixture",
+                    ),
+                ),
+            )
+            for cve_id, severity, score in severities
+        )
+        finding = replace(base.findings[0], cves=cves)
+        report = replace(base, findings=(finding,))
+
+        fake_stdout = MagicMock()
+        fake_stdout.isatty.return_value = True
+        with patch("vulpnix.cli.terminal.sys.stdout", fake_stdout):
+            rendered = "\\n".join(render_scan_report(report, 80))
+
+        for cve_id, severity, score in severities:
+            with self.subTest(cve=cve_id):
+                self.assertIn(cve_id, rendered)
+                self.assertIn(f"CVSS 3.1: {score:.1f} · {severity}", rendered)
+
+        for color_code in (
+            "38;2;134;239;172m",  # LOW: green
+            "38;2;255;205;128m",  # MEDIUM: amber
+            "38;2;255;151;97m",   # HIGH: orange
+            "38;2;255;112;112m",  # CRITICAL: red
+        ):
+            self.assertIn(color_code, rendered)
 
     def test_report_uses_semantic_colors_on_interactive_terminal(self) -> None:
         base = sample_report()

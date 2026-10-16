@@ -1,5 +1,10 @@
 """Assessment findings produced by Vulpnix rules."""
 
-from vulpnix.findings.model import Finding, FindingStatus
+from vulpnix.findings.model import (
+    CVEAssessment,
+    CVSSScore,
+    Finding,
+    FindingStatus,
+)
 
-__all__ = ["Finding", "FindingStatus"]
+__all__ = ["CVEAssessment", "CVSSScore", "Finding", "FindingStatus"]

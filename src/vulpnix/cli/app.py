@@ -1739,10 +1739,53 @@ def _package_audit_report_section(audit, *, details=False):
     confirmed = sum(item.status is FindingStatus.FAIL for item in findings)
     review = sum(item.status is FindingStatus.REVIEW for item in findings)
 
-    items = tuple(
-        f"[{item.status.value}] {item.rule_id}: {item.title}"
-        for item in findings[:limit]
-    )
+    item_lines: list[str] = []
+
+    for item in findings[:limit]:
+        item_lines.append(
+            f"[{item.status.value}] {item.rule_id}: {item.title}"
+        )
+
+        if not details:
+            continue
+
+        for cve in getattr(item, "cves", ()) or ():
+            cve_id = str(
+                getattr(cve, "cve_id", "") or "CVE identifier unavailable"
+            )
+            scores = getattr(cve, "cvss", ()) or ()
+
+            if not scores:
+                item_lines.append(f"    {cve_id}: CVSS unavailable")
+                continue
+
+            for score in scores:
+                version = str(getattr(score, "version", "unknown") or "unknown")
+                severity_value = getattr(score, "severity", "")
+                severity = str(
+                    getattr(severity_value, "value", severity_value) or "UNKNOWN"
+                ).upper()
+
+                try:
+                    base_score = float(score.base_score)
+                except (AttributeError, TypeError, ValueError):
+                    item_lines.append(f"    {cve_id}: CVSS score unavailable")
+                    continue
+
+                item_lines.append(
+                    f"    {cve_id}: CVSS {version} "
+                    f"{base_score:.1f} — {severity}"
+                )
+
+                source = str(getattr(score, "source", "") or "").strip()
+                if source:
+                    item_lines.append(f"      Source: {source}")
+
+                vector = str(getattr(score, "vector", "") or "").strip()
+                if vector:
+                    item_lines.append(f"      Vector: {vector}")
+
+    items = tuple(item_lines)
 
     if not items:
         items = (

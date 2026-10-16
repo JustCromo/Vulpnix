@@ -180,6 +180,104 @@ def _render_section(section: object, index: int) -> str:
     return "".join(parts)
 
 
+def _cvss_severity_class(value: object) -> str:
+    """Map CVSS severities to visible semantic badge classes."""
+    severity = str(getattr(value, "value", value) or "").strip().upper()
+    return {
+        "LOW": "low",
+        "MEDIUM": "medium",
+        "MODERATE": "medium",
+        "HIGH": "high",
+        "CRITICAL": "critical",
+    }.get(severity, "unknown")
+
+
+def _render_cve_cvss(finding: object) -> tuple[str, str]:
+    """Render visible CVE badges and expandable source/vector details."""
+    cves = getattr(finding, "cves", ()) or ()
+    if not cves:
+        return "", ""
+
+    badges: list[str] = []
+    details: list[str] = []
+
+    for cve in cves:
+        cve_id = str(getattr(cve, "cve_id", "") or "")
+        escaped_id = _e(cve_id or "CVE identifier unavailable")
+        scores = getattr(cve, "cvss", ()) or ()
+
+        if not scores:
+            badges.append(
+                '<span class="cvss-chip cvss-chip--unknown" '
+                'title="No valid CVSS vector recorded">'
+                f'{escaped_id} · CVSS unavailable</span>'
+            )
+            details.append(
+                '<div class="cvss-detail cvss-detail--unknown">'
+                '<div class="cvss-detail-heading">'
+                f'<strong>{escaped_id}</strong>'
+                '<span class="cvss-chip cvss-chip--unknown">'
+                'CVSS unavailable</span></div>'
+                '<p>No valid CVSS vector was recorded by the advisory source.</p>'
+                '</div>'
+            )
+            continue
+
+        for score in scores:
+            version = str(getattr(score, "version", "unknown") or "unknown")
+            base_score = float(getattr(score, "base_score"))
+            severity = str(
+                getattr(getattr(score, "severity", ""), "value",
+                        getattr(score, "severity", ""))
+                or "UNKNOWN"
+            ).strip().upper()
+            css_severity = _cvss_severity_class(severity)
+            escaped_version = _e(version)
+            escaped_severity = _e(severity)
+
+            badges.append(
+                f'<span class="cvss-chip cvss-chip--{css_severity}" '
+                f'title="CVSS {escaped_version} base score: {base_score:.1f}">'
+                f'{escaped_id} · {base_score:.1f} {escaped_severity}</span>'
+            )
+
+            detail_parts = [
+                '<div class="cvss-detail">',
+                '<div class="cvss-detail-heading">',
+                f'<strong>{escaped_id}</strong>',
+                f'<span class="cvss-chip cvss-chip--{css_severity}">'
+                f'CVSS {escaped_version} · {base_score:.1f} · '
+                f'{escaped_severity}</span>',
+                '</div>',
+            ]
+
+            source = getattr(score, "source", None)
+            if source:
+                detail_parts.append(
+                    f'<p class="cvss-source"><strong>Source:</strong> '
+                    f'{_e(source)}</p>'
+                )
+
+            vector = getattr(score, "vector", None)
+            if vector:
+                detail_parts.append(
+                    f'<p class="cvss-vector"><strong>Vector:</strong> '
+                    f'<code>{_e(vector)}</code></p>'
+                )
+
+            detail_parts.append('</div>')
+            details.append("".join(detail_parts))
+
+    badges_markup = "".join(badges)
+    details_markup = (
+        '<section class="cvss-details">'
+        '<h5>CVE / CVSS details</h5>'
+        + "".join(details)
+        + '</section>'
+    )
+    return badges_markup, details_markup
+
+
 def _render_finding(
     finding: object,
     risk_by_rule: dict[str, object],
@@ -209,6 +307,7 @@ def _render_finding(
         if severity is not None
         else ""
     )
+    cvss_badges_markup, cvss_details_markup = _render_cve_cvss(finding)
 
     parts = [
         f'<article class="finding-card finding-card--{css}">',
@@ -219,10 +318,12 @@ def _render_finding(
         '<div class="finding-meta">',
         f'<span class="rule-id">{_e(rule_id)}</span>',
         severity_markup,
+        cvss_badges_markup,
         risk_markup,
         "</div>",
         '<details class="finding-details"><summary>Evidence, explanation and recommendation</summary>',
         '<div class="finding-body">',
+        cvss_details_markup,
     ]
 
     evidence = getattr(finding, "evidence", None)
@@ -574,6 +675,44 @@ h2 { font-size: 1.35rem; margin: 0; letter-spacing: -.02em; }
 .finding-meta { display: flex; align-items: center; flex-wrap: wrap; gap: 7px; margin-top: 10px; }
 .rule-id, .severity-label { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .73rem; color: var(--muted); overflow-wrap: anywhere; }
 .severity-label { border: 1px solid var(--border); border-radius: 6px; padding: 3px 7px; }
+.cvss-chip {
+  display: inline-flex; align-items: center; gap: 5px; max-width: 100%;
+  border: 1px solid transparent; border-radius: 7px; padding: 4px 8px;
+  font-family: ui-monospace, SFMono-Regular, Consolas, monospace;
+  font-size: .72rem; line-height: 1.45; font-weight: 800;
+  letter-spacing: .015em; overflow-wrap: anywhere;
+}
+.cvss-chip--low {
+  color: var(--green); background: #86efac14; border-color: #86efac60;
+}
+.cvss-chip--medium {
+  color: var(--amber); background: #ffcd8014; border-color: #ffcd8060;
+}
+.cvss-chip--high {
+  color: var(--high); background: #ff975f14; border-color: #ff975f66;
+}
+.cvss-chip--critical {
+  color: var(--red); background: #ff708014; border-color: #ff708066;
+}
+.cvss-chip--unknown {
+  color: var(--muted); background: #a6aabd12; border-color: #a6aabd40;
+}
+.cvss-details { display: grid; gap: 9px; margin: 12px 0 4px; min-width: 0; }
+.cvss-detail {
+  min-width: 0; padding: 11px 12px; background: var(--surface-raised);
+  border: 1px solid var(--border); border-radius: 10px;
+}
+.cvss-detail-heading {
+  display: flex; align-items: center; justify-content: space-between;
+  flex-wrap: wrap; gap: 8px; min-width: 0;
+}
+.finding-body .cvss-detail p {
+  margin: 7px 0 0; overflow-wrap: anywhere; word-break: break-word;
+}
+.cvss-vector code {
+  display: inline; overflow-wrap: anywhere; word-break: break-word;
+  color: var(--muted); font-size: .78rem;
+}
 .risk-chip--pass { color: var(--green); background: #86efac14; }
 .risk-chip--review { color: var(--amber); background: #ffcd8014; }
 .risk-chip--high { color: var(--high); background: #ff975f14; }
