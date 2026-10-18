@@ -1,5 +1,6 @@
 """Deterministic fixtures shared by CLI integration tests."""
 
+from vulpnix.areas.filesystem import area as filesystem_area
 from vulpnix.areas.hardening import area as hardening_area
 from vulpnix.areas.services import unit_files as unit_files_area
 from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
@@ -81,5 +82,5 @@ def patch_supplementary_collectors(app_module):
         )
         stack.enter_context(patch.object(ssh_host_keys_area, "collect_ssh_host_key_metadata", lambda: safe_ssh_host_keys()))
         stack.enter_context(patch.object(unit_files_area, "collect_service_unit_file_metadata", lambda services: ((), ("fixture has no unit-file metadata",))))
-        stack.enter_context(patch.object(app_module, "collect_setid_files", lambda: empty_filesystem_coverage()))
+        stack.enter_context(patch.object(filesystem_area, "collect_setid_files", lambda: empty_filesystem_coverage()))
         yield

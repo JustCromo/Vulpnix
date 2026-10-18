@@ -11,6 +11,8 @@ from contextlib import redirect_stdout
 import unittest
 from unittest.mock import patch
 
+from vulpnix.areas.filesystem import FilesystemArea
+from vulpnix.areas.filesystem import area as filesystem_area
 from vulpnix.areas.hardening import KernelHardeningArea, area as hardening_area
 from vulpnix.areas.host import HostArea, area as host_area
 from vulpnix.areas.services import ServicesArea, UnitFilesArea
@@ -26,7 +28,13 @@ from vulpnix.context import Environment, ExecutionContext
 from vulpnix.core.sanitize import MAX_TEXT
 from vulpnix.engine import run_area
 from vulpnix.models import (
+    CoverageStatus,
+    FileMetadata,
+    FileMetadataResult,
+    FileMetadataStatus,
+    FilesystemCoverage,
     Service,
+    SetIdFile,
     SSHHostKeyObservation,
     SudoGrant,
     SudoPrivilege,
@@ -56,8 +64,20 @@ def strings(value):
             yield from strings(getattr(value, name))
 
 
+def hostile_filesystem_inputs():
+    """A set-ID file named by someone else: the realistic filesystem attack."""
+    results = (FileMetadataResult("/etc/passwd", FileMetadataStatus.NOT_ASSESSED, None, EVIL),)
+    files = (
+        SetIdFile(FileMetadata("/usr/bin/" + EVIL, 0, 0, 0o4777, 1, "regular file"), True, ("rw",)),
+        SetIdFile(FileMetadata("/opt/" + EVIL, 0, 0, 0o4755, 1, "regular file"), None, ("rw",), EVIL),
+    )
+    coverage = FilesystemCoverage(files, CoverageStatus.PARTIAL, ("/usr",), 5, 0.1, (EVIL,))
+    return results, coverage
+
+
 def hostile_areas():
     path = "/etc/systemd/system/" + EVIL
+    fs_results, fs_coverage = hostile_filesystem_inputs()
     return {
         "host": HostArea(lambda: SystemInfo(EVIL, EVIL, EVIL, EVIL, EVIL, 5.0)),
         "ssh": SSHConfigArea(lambda: (_ for _ in ()).throw(SSHCommandError(2, "", EVIL, option="-G"))),
@@ -75,6 +95,7 @@ def hostile_areas():
                                          grants=(SudoGrant((EVIL,), (EVIL,), (EVIL,), (EVIL,), EVIL),), host=EVIL),
                            SudoPrivilege("x", SudoPrivilegeStatus.NOT_ASSESSED, reason=EVIL)),
         ),
+        "filesystem": FilesystemArea(lambda: fs_results, lambda: fs_coverage),
         "services": ServicesArea(lambda: (Service(EVIL, EVIL, None, None, "systemd", EVIL),)),
         "unit_files": UnitFilesArea(
             lambda services: ((UnitFileObservation(EVIL, path, 1000, 0o666, True, False),
@@ -112,6 +133,12 @@ class HostileDataInResultsTests(unittest.TestCase):
             "unit_files": UnitFilesArea(
                 lambda s: ((UnitFileObservation("a.service", "/etc/systemd/system/" + HUGE, 0, 0o644, True, False),), (HUGE,)),
                 lambda: (Service("a.service"),),
+            ),
+            "filesystem": FilesystemArea(
+                lambda: (),
+                lambda: FilesystemCoverage(
+                    (SetIdFile(FileMetadata("/usr/bin/" + HUGE, 0, 0, 0o4777, 1, "regular file"), True, ("rw",)),),
+                    CoverageStatus.PARTIAL, ("/usr",), 1, 0.1, (HUGE,)),
             ),
         }
         for name, area in areas.items():
@@ -152,6 +179,12 @@ class HostileDataOnTheTerminalTests(unittest.TestCase):
         with patch.object(users_area, "collect_local_users", return_value=users), \
              patch.object(users_area, "collect_sudo_privileges", return_value=sudo):
             self.assert_clean(self.capture(lambda: app._show_users_assessment(detailed=True)), "users")
+
+    def test_filesystem_output_is_clean(self):
+        results, coverage = hostile_filesystem_inputs()
+        with patch.object(filesystem_area, "collect_sensitive_file_metadata", return_value=results), \
+             patch.object(filesystem_area, "collect_setid_files", return_value=coverage):
+            self.assert_clean(self.capture(lambda: app._show_filesystem_assessment(detailed=True)), "filesystem")
 
     def test_services_and_unit_file_output_is_clean(self):
         services = (Service(EVIL + ".service", "active", True, None, "systemd", "enabled"),)

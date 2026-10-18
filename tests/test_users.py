@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.filesystem import area as filesystem_area
 from vulpnix.areas.services import area as services_area
 from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
@@ -229,7 +230,7 @@ class UsersCLItests(unittest.TestCase):
         with (
             patch.object(users_area, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
             patch.object(users_area, "collect_sudo_privileges", return_value=()),
-            patch.object(app, "collect_sensitive_file_metadata", return_value=()),
+            patch.object(filesystem_area, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
         ):

@@ -1,76 +1,61 @@
 import unittest
+from unittest.mock import patch
 
+from vulpnix.cli import app
 from vulpnix.cli.report import ReportSection
-from vulpnix.cli.summary import AssessmentCoverage
-from vulpnix.scan.orchestrator import ScanOrchestrator
 from vulpnix.scan.result import ScanResult
 
 
-class ScanArchitectureTests(unittest.TestCase):
-    def test_filesystem_partial_coverage_requires_review(self):
-        from vulpnix.models import CoverageStatus, FilesystemCoverage
-        from vulpnix.rules.filesystem import FilesystemAssessment, SetIdAssessment
-        coverage = FilesystemCoverage((), CoverageStatus.PARTIAL, ("/usr",), 3, 0.1, ("permission denied",))
-        orchestrator = ScanOrchestrator()
-        result = orchestrator.run_filesystem(
-            sensitive_file_collector=lambda: (),
-            sensitive_file_assessor=lambda _: FilesystemAssessment((), (), ()),
-            setid_collector=lambda: coverage,
-            setid_assessor=lambda _: SetIdAssessment(0, 0, 0, ("permission denied",), ()),
-            section_builder=lambda *_: ReportSection("FILESYSTEM"),
-        )
-        self.assertEqual(result.coverage, AssessmentCoverage.PARTIAL)
-        self.assertGreater(result.review_items, 0)
+def section_result(title):
+    return ScanResult(sections=(ReportSection(title),), scope=(title.lower(),))
 
-    def test_full_scan_has_all_sections_and_final_coverage(self):
-        result = ScanOrchestrator().run_full_scan(
-            services_result=lambda: ScanResult(sections=(ReportSection("SERVICES"),)),
-            users_result=lambda: ScanResult(sections=(ReportSection("USERS"),)),
-            filesystem_section_builder=lambda *_: ReportSection("FILESYSTEM"),
-            sensitive_file_collector=lambda: (),
-            sensitive_file_assessor=lambda _: __import__("vulpnix.rules.filesystem", fromlist=["FilesystemAssessment"]).FilesystemAssessment((), (), ()),
-            setid_collector=lambda: __import__("vulpnix.models", fromlist=["FilesystemCoverage", "CoverageStatus"]).FilesystemCoverage((), __import__("vulpnix.models", fromlist=["CoverageStatus"]).CoverageStatus.COLLECTED, ("/usr",), 0, 0.0),
-            setid_assessor=lambda _: __import__("vulpnix.rules.filesystem", fromlist=["SetIdAssessment"]).SetIdAssessment(0, 0, 0, (), ()),
+
+class FullScanCompositionTests(unittest.TestCase):
+    def test_full_scan_lists_every_area_in_presentation_order(self):
+        with (
+            patch.object(app, "_run_services_result", return_value=section_result("SERVICES")),
+            patch.object(app, "_run_users_result", return_value=section_result("USERS")),
+            patch.object(app, "_run_filesystem_result", return_value=section_result("FILESYSTEM")),
+            patch.object(app, "_run_ssh_config_result", return_value=section_result("SSH")),
+            patch.object(app, "_run_hardening_result", return_value=section_result("KERNEL HARDENING")),
+            patch.object(app, "_run_network_result", return_value=section_result("NETWORK")),
+            patch.object(app, "_run_ssh_host_key_result", return_value=section_result("SSH HOST-KEY")),
+            patch.object(app, "_run_storage_result", return_value=section_result("STORAGE")),
+            patch.object(app, "_run_unit_files_result", return_value=section_result("UNIT FILES")),
+            patch.object(app, "_run_package_result", return_value=section_result("PACKAGES")),
+            patch.object(app, "_render_result") as render,
+        ):
+            app._show_scan()
+
+        result = render.call_args.args[0]
+        titles = [section.title for section in result.sections]
+        self.assertEqual(titles[0], "SYSTEM")
+        self.assertEqual(
+            titles[1:],
+            ["SERVICES", "USERS", "FILESYSTEM", "SSH", "KERNEL HARDENING", "NETWORK",
+             "SSH HOST-KEY", "STORAGE", "UNIT FILES", "PACKAGES"],
         )
-        self.assertEqual([section.title for section in result.sections], ["SERVICES", "USERS", "FILESYSTEM"])
-        self.assertEqual(result.coverage, AssessmentCoverage.COMPLETE)
-        self.assertEqual(result.review_items, 0)
+
+    def test_full_scan_scope_keeps_its_legacy_order(self):
+        with (
+            patch.object(app, "_run_services_result", return_value=section_result("SERVICES")),
+            patch.object(app, "_run_users_result", return_value=section_result("USERS")),
+            patch.object(app, "_run_filesystem_result", return_value=section_result("FILESYSTEM")),
+            patch.object(app, "_run_ssh_config_result", return_value=section_result("SSH")),
+            patch.object(app, "_run_hardening_result", return_value=section_result("KERNEL HARDENING")),
+            patch.object(app, "_run_network_result", return_value=section_result("NETWORK")),
+            patch.object(app, "_run_ssh_host_key_result", return_value=section_result("SSH HOST-KEY")),
+            patch.object(app, "_run_storage_result", return_value=section_result("STORAGE")),
+            patch.object(app, "_run_unit_files_result", return_value=section_result("UNIT FILES")),
+            patch.object(app, "_run_package_result", return_value=section_result("PACKAGES")),
+            patch.object(app, "_render_result") as render,
+        ):
+            app._show_scan()
+
+        scope = render.call_args.args[0].scope
+        self.assertEqual(scope[:5], ("system facts", "users", "services", "filesystem metadata", "set-ID files"))
+        self.assertEqual(len(scope), len(set(scope)))
 
 
 if __name__ == "__main__":
     unittest.main()
-
-class PrivilegeModeTests(unittest.TestCase):
-    def test_rootless_filesystem_result_requests_elevation(self):
-        from unittest.mock import patch
-        from vulpnix.cli import report
-        from vulpnix.models import CoverageStatus, FilesystemCoverage
-        from vulpnix.rules.filesystem import FilesystemAssessment, SetIdAssessment
-
-        coverage = FilesystemCoverage((), CoverageStatus.PARTIAL, ("/usr",), 1, 0.1, ("permission denied",))
-        with patch("vulpnix.scan.privilege.os.geteuid", return_value=1000):
-            result = ScanOrchestrator().run_filesystem(
-                sensitive_file_collector=lambda: (),
-                sensitive_file_assessor=lambda _: FilesystemAssessment((), (), ()),
-                setid_collector=lambda: coverage,
-                setid_assessor=lambda _: SetIdAssessment(0, 0, 0, ("permission denied",), ()),
-                section_builder=lambda *_: ReportSection("FILESYSTEM"),
-            )
-        self.assertEqual(result.privilege.mode, "ROOTLESS")
-        self.assertEqual(result.coverage, AssessmentCoverage.PARTIAL)
-        rendered = report.render_scan_report(
-            report.ScanReport(
-                host=None,
-                sections=result.sections,
-                findings=result.findings,
-                scope=result.scope,
-                coverage=result.coverage,
-                review_items=result.review_items,
-                privilege=result.privilege,
-            ),
-            80,
-        )
-        text = "\n".join(rendered)
-        self.assertIn("REVIEW REQUIRED", text)
-        self.assertIn("current privileges", text)
-        self.assertIn("sudo vulpnix", text)

@@ -105,6 +105,122 @@ def _hardening_section(result: AreaResult, details: bool) -> ReportSection:
     )
 
 
+def _file_summary(record) -> str:
+    uid = record.get("uid")
+    gid = record.get("gid")
+    return (
+        f"{record.key} · {record.get('type')} · UID {uid if uid is not None else 'unavailable'} · "
+        f"GID {gid if gid is not None else 'unavailable'} · mode {record.get('mode'):04o} · "
+        f"{record.get('size')} bytes"
+    )
+
+
+def _filesystem_section(result: AreaResult, details: bool) -> ReportSection:
+    """Facts, assessment, review, details and findings blocks, as before."""
+    sensitive = tuple(r for r in result.records if r.kind == "sensitive_file")
+    setid = tuple(r for r in result.records if r.kind == "setid_file")
+    findings = result.findings
+    setid_findings = tuple(f for f in findings if f.rule_id.startswith("FS-SETID"))
+    fs_review = tuple(g for g in result.gaps if g.key.startswith("fs_review:"))
+    setid_review = tuple(g for g in result.gaps if g.key.startswith("setid_review:"))
+
+    finding_paths = {
+        finding.evidence.split(";", 1)[0].removeprefix("Path: ") for finding in findings
+    }
+    attention_paths = finding_paths | {gap.subject for gap in fs_review}
+    detail_paths = set(attention_paths)
+    if details:
+        detail_paths.update(record.key for record in sensitive)
+        detail_paths.update(record.key for record in setid)
+    setid_by_path = {record.key: record for record in setid}
+    sensitive_by_path = {record.key: record for record in sensitive}
+
+    detail_lines: list[str] = []
+    for path in sorted(detail_paths):
+        setid_record = setid_by_path.get(path)
+        if setid_record is not None:
+            if details:
+                is_elf = setid_record.get("is_elf")
+                elf_status = "yes" if is_elf is True else "no" if is_elf is False else "NOT_ASSESSED"
+                options = setid_record.get("mount_options")
+                if options is None:
+                    mount_options = "NOT_ASSESSED"
+                elif options:
+                    mount_options = ", ".join(options)
+                else:
+                    mount_options = "(none)"
+                line = f"{_file_summary(setid_record)} · ELF: {elf_status} · mount options: {mount_options}"
+                if setid_record.get("reason"):
+                    line += f" · review: {setid_record.get('reason')}"
+                detail_lines.append(line)
+            else:
+                detail_lines.append(_file_summary(setid_record))
+            continue
+        record = sensitive_by_path.get(path)
+        if record is not None and record.get("type") is not None:
+            detail_lines.append(_file_summary(record))
+        else:
+            reason = record.get("reason") if record is not None else "metadata unavailable"
+            detail_lines.append(f"{path} · NOT_ASSESSED · {reason}")
+
+    checked = tuple(r for r in sensitive if r.get("assessed"))
+    ownership = sum(r.get("uid") is not None and r.get("gid") is not None for r in checked)
+    assessment_lines = (
+        (f"Permission checks completed for {len(checked)} regular file(s).",)
+        if checked
+        else ("No regular files could be assessed.",)
+    )
+    if ownership:
+        assessment_lines += (f"Ownership verified for {ownership} file(s).",)
+    if findings:
+        assessment_lines += tuple(
+            f"{finding.status.value} · {finding.title} ({finding.rule_id})" for finding in findings
+        )
+    elif checked:
+        assessment_lines += ("No defined insecure condition detected among checks with reliable data.",)
+
+    review_lines = tuple(gap.message for gap in fs_review)
+    review_lines += tuple(f"Set-ID: {gap.message}" for gap in setid_review)
+    review_lines += tuple(
+        gap.message for gap in result.gaps if gap.key in {"sensitive-files-unavailable", "setid-unavailable"}
+    )
+    if not review_lines:
+        review_lines = ("All defined filesystem checks completed without unresolved review items.",)
+
+    collected = sum(r.get("collection_status") in {"collected", "partial"} for r in sensitive)
+    fact_lines = tuple(
+        f"{label}: {value}"
+        for label, value in (
+            ("Target files", str(len(sensitive))),
+            ("Metadata collected", f"{collected}/{len(sensitive)}"),
+            ("Regular files inspected", str(len(checked))),
+            ("Ownership assessable", f"{ownership}/{len(checked)}"),
+            ("Verified findings", str(len(findings))),
+            ("Set-ID regular files", str(len(setid))),
+            ("Set-ID review items", str(len(setid_review))),
+            ("Set-ID verified findings", str(len(setid_findings))),
+        )
+    )
+    blocks = [
+        ReportBlock("FACTS", lines=fact_lines),
+        ReportBlock("ASSESSMENT", lines=assessment_lines),
+        ReportBlock("REVIEW", lines=review_lines),
+        ReportBlock("DETAILS", lines=tuple(detail_lines) or ("No files require additional detail.",)),
+    ]
+    if details and findings:
+        finding_lines: list[str] = []
+        for finding in findings:
+            finding_lines.extend((
+                f"[{finding.status.value}] {finding.title}",
+                f"Rule: {finding.rule_id}",
+                f"Evidence: {finding.evidence}",
+                f"Why it matters: {finding.explanation}",
+                f"Recommendation: {finding.recommendation}",
+            ))
+        blocks.append(ReportBlock("FINDINGS", lines=tuple(finding_lines)))
+    return ReportSection(title=result.title, blocks=tuple(blocks))
+
+
 def _services_section(result: AreaResult, details: bool) -> ReportSection:
     """State counts and the active, startup-enabled services, as before."""
     records = result.records
@@ -347,6 +463,7 @@ _LEGACY_SECTIONS: dict[str, Callable[[AreaResult, bool], ReportSection]] = {
     "host": _host_section,
     "hardening": _hardening_section,
     "users": _users_section,
+    "filesystem": _filesystem_section,
     "services": _services_section,
     "unit_files": _unit_files_section,
 }

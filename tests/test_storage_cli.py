@@ -46,14 +46,9 @@ class StorageCliIntegrationTests(unittest.TestCase):
     def test_filesystem_command_includes_m7_storage_result(self):
         base = base_result()
         storage = storage_result()
-        fake_orchestrator = type(
-            "FakeOrchestrator",
-            (),
-            {"run_filesystem": lambda self, **kwargs: base},
-        )()
 
         with (
-            patch.object(app, "_make_orchestrator", return_value=fake_orchestrator),
+            patch.object(app, "_run_filesystem_result", return_value=base),
             patch.object(app, "_run_storage_result", return_value=storage) as run_storage,
             patch.object(app, "_render_result") as render,
         ):
@@ -74,14 +69,13 @@ class StorageCliIntegrationTests(unittest.TestCase):
         base = base_result("SYSTEM")
         storage = storage_result()
         empty = ScanResult()
-        fake_orchestrator = type(
-            "FakeOrchestrator",
-            (),
-            {"run_full_scan": lambda self, **kwargs: base},
-        )()
 
         with (
-            patch.object(app, "_make_orchestrator", return_value=fake_orchestrator),
+            patch.object(app, "_run_services_result", return_value=base),
+            patch.object(app, "_run_users_result", return_value=empty),
+            patch.object(app, "_run_filesystem_result", return_value=empty),
+            patch.object(app, "_run_ssh_config_result", return_value=empty),
+            patch.object(app, "_run_unit_files_result", return_value=empty),
             patch.object(app, "_run_hardening_result", return_value=empty),
             patch.object(app, "_run_network_result", return_value=empty),
             patch.object(app, "_run_ssh_host_key_result", return_value=empty),
@@ -104,14 +98,9 @@ class StorageCliIntegrationTests(unittest.TestCase):
     def test_filesystem_details_are_forwarded_to_storage(self):
         base = base_result()
         storage = storage_result()
-        fake_orchestrator = type(
-            "FakeOrchestrator",
-            (),
-            {"run_filesystem": lambda self, **kwargs: base},
-        )()
 
         with (
-            patch.object(app, "_make_orchestrator", return_value=fake_orchestrator),
+            patch.object(app, "_run_filesystem_result", return_value=base),
             patch.object(app, "_run_storage_result", return_value=storage) as run_storage,
             patch.object(app, "_render_result"),
         ):

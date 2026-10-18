@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from vulpnix.cli import app
+from vulpnix.areas.filesystem import area as filesystem_area
 from vulpnix.areas.services import area as services_area
 from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
@@ -294,7 +295,7 @@ class FullScanWidthTests(unittest.TestCase):
             patch.object(host_area, "collect_system_info", return_value=sample_report().host),
             patch.object(users_area, "collect_local_users", return_value=()),
             patch.object(users_area, "collect_sudo_privileges", return_value=()),
-            patch.object(app, "collect_sensitive_file_metadata", return_value=()),
+            patch.object(filesystem_area, "collect_sensitive_file_metadata", return_value=()),
             patch.object(
                 services_area,
                 "collect_services",
@@ -531,7 +532,7 @@ class HostRiskSummaryReportTests(unittest.TestCase):
                 report = replace(sample_report(), details=details)
                 raw_lines = render_scan_report(report, 80)
                 lines = [
-                    re.sub(r"\\x1b\\[[0-9;]*m", "", line)
+                    re.sub(r"\x1b\[[0-9;]*m", "", line)
                     for line in raw_lines
                 ]
                 final_index = next(

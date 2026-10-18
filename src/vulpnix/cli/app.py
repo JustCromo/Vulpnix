@@ -13,8 +13,6 @@ except ImportError:
     readline = None
 
 from vulpnix.collectors import (
-    collect_sensitive_file_metadata,
-    collect_setid_files,
     collect_network_snapshot,
     collect_network_interfaces,
     collect_firewall_snapshot,
@@ -25,9 +23,6 @@ from vulpnix.collectors.storage import collect_storage_snapshot
 from vulpnix.models.storage import StorageStatus
 from vulpnix.rules.storage import assess_storage
 from vulpnix.models import (
-    FileMetadata,
-    FileMetadataResult,
-    FileMetadataStatus,
     SystemInfo,
     FirewallObservation,
     FirewallSnapshot,
@@ -54,7 +49,6 @@ from vulpnix.cli.terminal import (
     wrap_text,
 )
 from vulpnix.cli.report import (
-    ReportBlock,
     ReportSection,
     ScanReport,
     render_report_section,
@@ -63,11 +57,7 @@ from vulpnix.cli.report import (
 
 from vulpnix.cli.html_report import save_html_report
 from vulpnix.cli.report_export import save_report_export
-from vulpnix.rules.filesystem import (
-    FilesystemAssessment,
-    assess_sensitive_files,
-    assess_setid_files,
-)
+from vulpnix.areas.filesystem import FilesystemArea
 from vulpnix.areas.hardening import KernelHardeningArea
 from vulpnix.areas.host import HostArea
 from vulpnix.areas.services import ServicesArea, UnitFilesArea
@@ -316,6 +306,7 @@ _REPORT_EXPORT_AREA: str | None = None
 
 def _render_result(result, *, details: bool = True) -> None:
     """Render a normalized scan result with the shared terminal renderer."""
+    _emit_progress(ScanStage.COMPLETED, "Assessment completed")
     report = ScanReport(
         host=result.host,
         sections=result.sections,
@@ -360,6 +351,11 @@ def _progress_callback(event: ScanProgress) -> None:
     if event.stage in {ScanStage.COMPLETED, ScanStage.ERROR}:
         stream.write("\n")
         stream.flush()
+
+
+def _emit_progress(stage: ScanStage, message: str) -> None:
+    """Show live progress in the interactive shell; a no-op everywhere else."""
+    _progress_callback(ScanProgress(stage, message))
 
 
 def _make_orchestrator() -> ScanOrchestrator:
@@ -743,6 +739,7 @@ def _run_area_result(area, *, scope, details=False, title=None, ctx=None):
     a single-area command gets a fresh one.
     """
     ctx = ctx or current_execution_context()
+    _emit_progress(ScanStage.COLLECTING, f"Assessing {area.title.lower()}")
     result = run_area(area, ctx)
     if title is not None:
         result = replace(result, title=title)
@@ -801,158 +798,6 @@ def _show_service_assessment(*, detailed: bool = False) -> None:
 
 def _show_users_assessment(*, detailed: bool = False) -> None:
     _render_result(_run_users_result(details=detailed), details=detailed)
-
-
-def _file_metadata_summary(metadata: FileMetadata) -> str:
-    uid = str(metadata.uid) if metadata.uid is not None else "unavailable"
-    gid = str(metadata.gid) if metadata.gid is not None else "unavailable"
-    return (
-        f"{metadata.path} · {metadata.type} · UID {uid} · "
-        f"GID {gid} · mode {metadata.mode:04o} · {metadata.size} bytes"
-    )
-
-
-def _filesystem_report_section(
-    results: tuple[FileMetadataResult, ...],
-    assessment: FilesystemAssessment,
-    setid_coverage,
-    setid_assessment,
-    *,
-    detailed_findings: bool = False,
-    detailed_metadata: bool = False,
-) -> ReportSection:
-    filesystem_findings = tuple(assessment.findings)
-    setid_findings = tuple(setid_assessment.findings)
-    all_findings = filesystem_findings + setid_findings
-    finding_paths = {
-        finding.evidence.split(";", 1)[0].removeprefix("Path: ")
-        for finding in all_findings
-    }
-    attention_paths = finding_paths | {item.path for item in assessment.review}
-    details: list[str] = []
-    metadata_by_path = {
-        result.path: result.metadata
-        for result in results
-        if result.metadata is not None
-    }
-    setid_by_path = {
-        item.metadata.path: item for item in setid_coverage.files
-    }
-    detail_paths = set(attention_paths)
-    if detailed_metadata:
-        detail_paths.update(result.path for result in results)
-        detail_paths.update(setid_by_path)
-
-    for path in sorted(detail_paths):
-        setid_item = setid_by_path.get(path)
-        if setid_item is not None:
-            if detailed_metadata:
-                elf_status = (
-                    "yes" if setid_item.is_elf is True
-                    else "no" if setid_item.is_elf is False
-                    else "NOT_ASSESSED"
-                )
-                if setid_item.mount_options is None:
-                    mount_options = "NOT_ASSESSED"
-                elif setid_item.mount_options:
-                    mount_options = ", ".join(setid_item.mount_options)
-                else:
-                    mount_options = "(none)"
-
-                summary = (
-                    f"{_file_metadata_summary(setid_item.metadata)} · "
-                    f"ELF: {elf_status} · mount options: {mount_options}"
-                )
-                if setid_item.reason:
-                    summary += f" · review: {setid_item.reason}"
-                details.append(summary)
-            else:
-                details.append(_file_metadata_summary(setid_item.metadata))
-            continue
-
-        metadata = metadata_by_path.get(path)
-        if metadata is not None:
-            details.append(_file_metadata_summary(metadata))
-        else:
-            result = next((item for item in results if item.path == path), None)
-            reason = result.reason if result else "metadata unavailable"
-            details.append(f"{path} · NOT_ASSESSED · {reason}")
-
-    ownership_assessable = sum(
-        metadata.uid is not None and metadata.gid is not None
-        for metadata in assessment.checked
-    )
-    assessment_lines = (
-        (f"Permission checks completed for {len(assessment.checked)} regular file(s).",)
-        if assessment.checked
-        else ("No regular files could be assessed.",)
-    )
-    if ownership_assessable:
-        assessment_lines += (
-            f"Ownership verified for {ownership_assessable} file(s).",
-        )
-    if all_findings:
-        assessment_lines += tuple(
-            f"{finding.status.value} · {finding.title} ({finding.rule_id})"
-            for finding in all_findings
-        )
-    elif assessment.checked:
-        assessment_lines += (
-            "No defined insecure condition detected among checks with reliable data.",
-        )
-
-    review_lines = tuple(
-        f"{item.path}: {item.reason}"
-        for item in assessment.review
-    )
-    review_lines += tuple(f"Set-ID: {item}" for item in setid_assessment.review)
-    if not review_lines:
-        review_lines = ("All defined filesystem checks completed without unresolved review items.",)
-
-    collected = sum(
-        result.status in {FileMetadataStatus.COLLECTED, FileMetadataStatus.PARTIAL}
-        and result.metadata is not None
-        for result in results
-    )
-    fact_lines = tuple(
-        f"{label}: {value}"
-        for label, value in (
-            ("Target files", str(len(results))),
-            ("Metadata collected", f"{collected}/{len(results)}"),
-            ("Regular files inspected", str(len(assessment.checked))),
-            ("Ownership assessable", f"{ownership_assessable}/{len(assessment.checked)}"),
-            ("Verified findings", str(len(all_findings))),
-            ("Set-ID regular files", str(len(setid_coverage.files))),
-            ("Set-ID review items", str(len(setid_assessment.review))),
-            ("Set-ID verified findings", str(len(setid_findings))),
-        )
-    )
-    blocks = [
-        ReportBlock("FACTS", lines=fact_lines),
-        ReportBlock("ASSESSMENT", lines=assessment_lines),
-        ReportBlock("REVIEW", lines=review_lines),
-        ReportBlock("DETAILS", lines=tuple(details) or ("No files require additional detail.",)),
-    ]
-    if detailed_findings and all_findings:
-        finding_lines: list[str] = []
-        for finding in all_findings:
-            finding_lines.extend(
-                (
-                    f"[{finding.status.value}] {finding.title}",
-                    f"Rule: {finding.rule_id}",
-                    f"Evidence: {finding.evidence}",
-                    f"Why it matters: {finding.explanation}",
-                    f"Recommendation: {finding.recommendation}",
-                )
-            )
-        blocks.append(ReportBlock("FINDINGS", lines=tuple(finding_lines)))
-
-    return ReportSection(
-        title="FILESYSTEM",
-        blocks=tuple(blocks),
-    )
-
-
 
 
 def _format_storage_size(value):
@@ -1154,49 +999,20 @@ def _run_storage_result(*, details=False):
         ),
     )
 
+def _run_filesystem_result(*, details: bool = False, ctx=None):
+    return _run_area_result(
+        FilesystemArea(), scope=("filesystem metadata", "set-ID files"), details=details, ctx=ctx
+    )
+
+
 def _show_filesystem_assessment(*, detailed: bool = False) -> None:
-    """Run M4 file checks and M7 mounted-filesystem capacity checks."""
-    def build_section(results, assessment, setid_coverage, setid_assessment):
-        return _filesystem_report_section(
-            results,
-            assessment,
-            setid_coverage,
-            setid_assessment,
-            detailed_findings=detailed,
-            detailed_metadata=detailed,
-        )
-
-    try:
-        result = _make_orchestrator().run_filesystem(
-            section_builder=build_section,
-            sensitive_file_collector=collect_sensitive_file_metadata,
-            sensitive_file_assessor=assess_sensitive_files,
-            setid_collector=collect_setid_files,
-            setid_assessor=assess_setid_files,
-        )
-    except (OSError, UnicodeError, ValueError) as error:
-        result = _make_orchestrator()._result(
-            sections=(
-                ReportSection(
-                    "FILESYSTEM",
-                    status="NOT_ASSESSED",
-                    message=(
-                        "Filesystem checks could not be fully assessed: "
-                        f"{_display_value(str(error))}"
-                    ),
-                ),
-            ),
-            scope=("filesystem metadata", "set-ID files"),
-            coverage=AssessmentCoverage.PARTIAL,
-            review_items=1,
-        )
-
+    """Sensitive-file and set-ID checks, plus mounted-filesystem capacity checks."""
+    ctx = current_execution_context()
     result = _combine_results(
-        result,
+        _run_filesystem_result(details=detailed, ctx=ctx),
         _run_storage_result(details=detailed),
     )
     _render_result(result, details=detailed)
-
 
 
 def _run_ssh_config_result(ctx=None):
@@ -1436,9 +1252,15 @@ def _show_packages_assessment(*, detailed=False):
     result = _run_package_result(details=detailed)
     _render_result(result, details=detailed)
 
+# The legacy report lists scope in this order; kept until the new renderers
+# derive it from the area registry.
+_FULL_SCAN_SCOPE_HEAD = ("system facts", "users", "services", "filesystem metadata", "set-ID files")
+
+
 def _show_scan(*, detailed: bool = False) -> None:
-    """Run the full assessment and merge supplementary read-only checks."""
+    """Run the full assessment: every area in presentation order, one shared context."""
     ctx = current_execution_context()  # one context: areas share observations
+    _emit_progress(ScanStage.STARTING, "Starting full Linux assessment")
     host_result = _run_area_result(HostArea(), scope=("system facts",), ctx=ctx)
     if host_result.host is None:
         # Without host facts the full assessment is not attempted.
@@ -1448,33 +1270,21 @@ def _show_scan(*, detailed: bool = False) -> None:
         )
         return
 
-    scan_result = _make_orchestrator().run_full_scan(
-        filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
-            results, assessment, coverage, setid, detailed_findings=detailed, detailed_metadata=detailed
-        ),
-        services_result=lambda: _run_services_result(details=detailed, ctx=ctx),
-        users_result=lambda: _run_users_result(details=detailed, ctx=ctx),
-        sensitive_file_collector=collect_sensitive_file_metadata,
-        sensitive_file_assessor=assess_sensitive_files,
-        setid_collector=collect_setid_files,
-        setid_assessor=assess_setid_files,
-    )
-    result = _combine_results(host_result, scan_result)
-
-    extras = [
+    result = _combine_results(
+        host_result,
+        _run_services_result(details=detailed, ctx=ctx),
+        _run_users_result(details=detailed, ctx=ctx),
+        _run_filesystem_result(details=detailed, ctx=ctx),
         _run_ssh_config_result(ctx=ctx),
         _run_hardening_result(details=detailed, ctx=ctx),
         _run_network_result(details=detailed),
         _run_ssh_host_key_result(details=detailed, ctx=ctx),
         _run_storage_result(details=detailed),
         _run_unit_files_result(details=detailed, ctx=ctx),
-    ]
-    result = _combine_results(result, *extras)
-    result = _combine_results(
-        result,
         _run_package_result(details=detailed),
     )
-    _render_result(result, details=detailed)
+    rest = tuple(item for item in result.scope if item not in _FULL_SCAN_SCOPE_HEAD)
+    _render_result(replace(result, scope=_FULL_SCAN_SCOPE_HEAD + rest), details=detailed)
 
 
 def _show_presentation(*, kitty_mascot: bool = False) -> None:
