@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
 from vulpnix.findings import FindingStatus
@@ -200,7 +201,7 @@ class ExtendedScanCommandTests(unittest.TestCase):
 
     def test_full_scan_host_failure_is_reported_instead_of_crashing_cli(self):
         output = io.StringIO()
-        with patch.object(app, "collect_system_info", side_effect=OSError("host facts unavailable")), redirect_stdout(output):
+        with patch.object(host_area, "collect_system_info", side_effect=OSError("host facts unavailable")), redirect_stdout(output):
             app._dispatch_command("scan")
 
         self.assertIn("SYSTEM", output.getvalue())
@@ -212,7 +213,7 @@ class ExtendedScanCommandTests(unittest.TestCase):
     def test_rootless_incomplete_scan_explicitly_recommends_elevation(self):
         compact = io.StringIO()
         with patch.object(app, "collect_sysctl_observations", return_value=()), \
-             patch("vulpnix.scan.orchestrator.current_privilege_context", return_value=PrivilegeContext(1000, "ROOTLESS")), \
+             patch("vulpnix.context.execution.current_privilege_context", return_value=PrivilegeContext(1000, "ROOTLESS")), \
              redirect_stdout(compact):
             app._dispatch_command("scan hardening")
 

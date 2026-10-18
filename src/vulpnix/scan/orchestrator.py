@@ -11,7 +11,6 @@ from vulpnix.collectors import (
     collect_setid_files,
     collect_sensitive_file_metadata,
     collect_sudo_privileges,
-    collect_system_info,
 )
 from vulpnix.collectors.hardening import collect_sysctl_observations
 from vulpnix.collectors.network import collect_network_snapshot
@@ -24,7 +23,6 @@ from vulpnix.models import (
     Service,
     SudoPrivilege,
     SudoPrivilegeStatus,
-    SystemInfo,
     User,
     HardeningAssessment,
     NetworkSnapshot,
@@ -39,13 +37,12 @@ from vulpnix.rules.filesystem import (
 )
 from vulpnix.rules.hardening import assess_kernel_hardening
 from vulpnix.rules.systemd_security import assess_systemd_unit_metadata
-from vulpnix.scan.privilege import current_privilege_context
+from vulpnix.context import current_execution_context
 from vulpnix.scan.progress import ScanProgress, ScanStage
 from vulpnix.scan.result import ScanResult
 
 UsersCollector = Callable[[], tuple[User, ...]]
 SudoCollector = Callable[[tuple[User, ...]], tuple[SudoPrivilege, ...]]
-HostCollector = Callable[[], SystemInfo]
 ServicesCollector = Callable[[], tuple[Service, ...]]
 UsersSectionBuilder = Callable[[tuple[User, ...], tuple[SudoPrivilege, ...]], ReportSection]
 FilesystemSectionBuilder = Callable[
@@ -53,7 +50,6 @@ FilesystemSectionBuilder = Callable[
     ReportSection,
 ]
 ServiceSectionBuilder = Callable[[tuple[Service, ...]], ReportSection]
-HostSectionBuilder = Callable[[SystemInfo], ReportSection]
 HardeningSectionBuilder = Callable[[HardeningAssessment], ReportSection]
 NetworkSectionBuilder = Callable[[NetworkSnapshot], ReportSection]
 UnitFileSectionBuilder = Callable[[UnitFileAssessment], ReportSection]
@@ -64,7 +60,8 @@ class ScanOrchestrator:
 
     def __init__(self, *, progress_callback: Callable[[ScanProgress], None] | None = None) -> None:
         self._progress_callback = progress_callback
-        self._privilege = current_privilege_context()
+        # One source of truth: the same context every Area receives.
+        self._privilege = current_execution_context().privilege
 
     def _emit(self, stage: ScanStage, message: str, *, completed: int = 0, total: int | None = None) -> None:
         if self._progress_callback is not None:
@@ -95,19 +92,6 @@ class ScanOrchestrator:
             return state_unknown or enablement_unknown
 
         return sum(needs_review(service) for service in services)
-
-    def run_host(self, *, collector: HostCollector = collect_system_info, section_builder: HostSectionBuilder) -> ScanResult:
-        self._emit(ScanStage.STARTING, "Starting host assessment")
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting host facts")
-            info = collector()
-            self._emit(ScanStage.ASSESSING, "Building host report")
-            section = section_builder(info)
-        except (OSError, UnicodeError, ValueError, NotImplementedError) as error:
-            self._emit(ScanStage.ERROR, f"Host assessment failed: {error}")
-            raise
-        self._emit(ScanStage.COMPLETED, "Host assessment completed")
-        return self._result(sections=(section,), scope=("system facts",), host=info)
 
     def run_services(self, *, collector: ServicesCollector = collect_services, section_builder: ServiceSectionBuilder) -> ScanResult:
         self._emit(ScanStage.STARTING, "Starting services assessment")
@@ -268,8 +252,6 @@ class ScanOrchestrator:
         users_section_builder: UsersSectionBuilder,
         filesystem_section_builder: FilesystemSectionBuilder,
         service_section_builder: ServiceSectionBuilder,
-        host_section_builder: HostSectionBuilder,
-        host_collector: HostCollector = collect_system_info,
         services_collector: ServicesCollector = collect_services,
         users_collector: UsersCollector = collect_local_users,
         sudo_collector: SudoCollector = collect_sudo_privileges,
@@ -278,17 +260,13 @@ class ScanOrchestrator:
         setid_collector: Callable[[], FilesystemCoverage] = collect_setid_files,
         setid_assessor: Callable[[FilesystemCoverage], SetIdAssessment] = assess_setid_files,
     ) -> ScanResult:
-        self._emit(ScanStage.STARTING, "Starting full Linux assessment", total=7)
+        self._emit(ScanStage.STARTING, "Starting full Linux assessment", total=6)
         sections: list[ReportSection] = []
         findings: list[Finding] = []
         review_items = 0
 
-        self._emit(ScanStage.COLLECTING, "Collecting host facts", completed=1, total=7)
-        host = host_collector()
-        sections.append(host_section_builder(host))
-
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting services", completed=2, total=7)
+            self._emit(ScanStage.COLLECTING, "Collecting services", completed=1, total=6)
             services = services_collector()
             sections.append(service_section_builder(services))
             review_items += self._service_review_items(services)
@@ -297,9 +275,9 @@ class ScanOrchestrator:
             review_items += 1
 
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting local accounts", completed=3, total=7)
+            self._emit(ScanStage.COLLECTING, "Collecting local accounts", completed=2, total=6)
             users = users_collector()
-            self._emit(ScanStage.COLLECTING, "Collecting privilege information", completed=4, total=7)
+            self._emit(ScanStage.COLLECTING, "Collecting privilege information", completed=3, total=6)
             sudo = sudo_collector(users)
             sections.append(users_section_builder(users, sudo))
             review_items += self._user_review_items(users, sudo)
@@ -308,11 +286,11 @@ class ScanOrchestrator:
             review_items += 1
 
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting sensitive file metadata", completed=5, total=7)
+            self._emit(ScanStage.COLLECTING, "Collecting sensitive file metadata", completed=4, total=6)
             file_results = sensitive_file_collector()
-            self._emit(ScanStage.ASSESSING, "Assessing sensitive file metadata", completed=6, total=7)
+            self._emit(ScanStage.ASSESSING, "Assessing sensitive file metadata", completed=5, total=6)
             fs_assessment = sensitive_file_assessor(file_results)
-            self._emit(ScanStage.COLLECTING, "Collecting set-ID files", completed=7, total=7)
+            self._emit(ScanStage.COLLECTING, "Collecting set-ID files", completed=6, total=6)
             setid_coverage = setid_collector()
             setid_assessment = setid_assessor(setid_coverage)
             sections.append(filesystem_section_builder(file_results, fs_assessment, setid_coverage, setid_assessment))
@@ -325,12 +303,11 @@ class ScanOrchestrator:
             review_items += 1
 
         coverage = AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE
-        self._emit(ScanStage.COMPLETED, "Full Linux assessment completed", completed=7, total=7)
+        self._emit(ScanStage.COMPLETED, "Full Linux assessment completed", completed=6, total=6)
         return self._result(
-            host=host,
             sections=tuple(sections),
             findings=tuple(findings),
-            scope=("system facts", "users", "services", "filesystem metadata", "set-ID files"),
+            scope=("users", "services", "filesystem metadata", "set-ID files"),
             coverage=coverage,
             review_items=review_items,
         )

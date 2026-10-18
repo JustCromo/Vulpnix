@@ -17,6 +17,7 @@ from collections.abc import Callable
 from vulpnix.cli.report import ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.core import AreaResult, AreaStatus, FindingStatus
+from vulpnix.models import SystemInfo
 from vulpnix.scan.privilege import PrivilegeContext
 from vulpnix.scan.result import ScanResult
 
@@ -57,8 +58,42 @@ def _ssh_host_keys_section(result: AreaResult, details: bool) -> ReportSection:
     )
 
 
+def _host_section(result: AreaResult, details: bool) -> ReportSection:
+    """The five identity rows the legacy view showed (environment is not shown)."""
+    facts = {fact.key: fact for fact in result.facts}
+    distribution = facts["distribution"].value
+    if facts["distribution_version"].raw:
+        distribution += f" ({facts['distribution_version'].value})"
+    return ReportSection(
+        title=result.title,
+        facts=(
+            ("Hostname", facts["hostname"].value),
+            ("Distribution", distribution),
+            ("Kernel", facts["kernel_release"].value),
+            ("Architecture", facts["architecture"].value),
+            ("Uptime", facts["uptime"].value),
+        ),
+    )
+
+
+def _system_info(result: AreaResult) -> SystemInfo | None:
+    """Rebuild the typed host identity the legacy renderers read."""
+    if result.area_id != "host" or result.status in {AreaStatus.NOT_ASSESSED, AreaStatus.ERROR}:
+        return None
+    raw = {fact.key: fact.raw for fact in result.facts}
+    return SystemInfo(
+        hostname=raw.get("hostname"),
+        distribution=raw.get("distribution"),
+        distribution_version=raw.get("distribution_version"),
+        kernel_release=raw.get("kernel_release"),
+        architecture=raw.get("architecture"),
+        uptime_seconds=raw.get("uptime"),
+    )
+
+
 _LEGACY_SECTIONS: dict[str, Callable[[AreaResult, bool], ReportSection]] = {
     "ssh_host_keys": _ssh_host_keys_section,
+    "host": _host_section,
 }
 
 
@@ -101,5 +136,6 @@ def area_result_to_scan_result(
         scope=scope,
         coverage=AssessmentCoverage.COMPLETE if complete else AssessmentCoverage.PARTIAL,
         review_items=len(result.gaps),
+        host=_system_info(result),
         privilege=privilege,
     )

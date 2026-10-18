@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
 from vulpnix_test_support import patch_supplementary_collectors
@@ -167,7 +168,7 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch_supplementary_collectors(app),
-            patch.object(app, "collect_system_info", return_value=SystemInfo()),
+            patch.object(host_area, "collect_system_info", return_value=SystemInfo()),
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
@@ -234,7 +235,7 @@ class SSHCommandTests(unittest.TestCase):
     def test_scan_host_shows_host_facts_only(self) -> None:
         info = SystemInfo(hostname="example", distribution="Example Linux", distribution_version="1")
         output = io.StringIO()
-        with patch.object(app, "collect_system_info", return_value=info), redirect_stdout(output):
+        with patch.object(host_area, "collect_system_info", return_value=info), redirect_stdout(output):
             keep_running = app._dispatch_command("scan host")
         self.assertTrue(keep_running)
         rendered = output.getvalue()
@@ -269,7 +270,7 @@ class SSHCommandTests(unittest.TestCase):
         )
         output = io.StringIO()
         with (
-            patch.object(app, "collect_system_info", return_value=info) as host,
+            patch.object(host_area, "collect_system_info", return_value=info) as host,
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),

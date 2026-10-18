@@ -6,15 +6,12 @@ import subprocess
 
 from vulpnix.context import ExecutionContext
 from vulpnix.core import AreaResult, AreaStatus, Gap
+from vulpnix.core.text import printable
 from vulpnix.engine.area import Area
 
 # Failures caused by the observed system (missing files, unreadable output,
 # failing commands). Anything else is a Vulpnix bug and must surface.
 EXPECTED_FAILURES = (OSError, subprocess.SubprocessError, UnicodeError, ValueError)
-
-
-def _printable(text: str) -> str:
-    return "".join(ch if ch.isprintable() else "\N{REPLACEMENT CHARACTER}" for ch in text)
 
 
 def run_area(area: Area, ctx: ExecutionContext) -> AreaResult:
@@ -26,7 +23,7 @@ def run_area(area: Area, ctx: ExecutionContext) -> AreaResult:
     try:
         result = area.run(ctx)
     except EXPECTED_FAILURES as error:
-        detail = _printable(str(error)) or type(error).__name__
+        detail = printable(str(error)) or type(error).__name__
         return AreaResult(
             area_id=area.id,
             title=area.title,

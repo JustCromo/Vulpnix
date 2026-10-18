@@ -18,6 +18,7 @@ from vulpnix.collectors.ssh import (
 )
 from vulpnix.context import ExecutionContext
 from vulpnix.core import AreaResult, AreaStatus, Fact, Finding, FindingStatus, Gap
+from vulpnix.core.text import printable
 from vulpnix.models import SSHConfig
 from vulpnix.rules.ssh import (
     check_ssh_empty_passwords,
@@ -39,14 +40,10 @@ _ROOT_LOGIN_LABELS = {
 _SSH_UNAVAILABLE = (OSError, subprocess.SubprocessError, UnicodeError, ValueError)
 
 
-def _printable(text: str) -> str:
-    return "".join(ch if ch.isprintable() else "\N{REPLACEMENT CHARACTER}" for ch in text)
-
-
 def _command_detail(error: SSHCommandError) -> str:
     if not error.diagnostic:
         return f" (exit {error.returncode})"
-    return f" (exit {error.returncode}: {_printable(error.diagnostic)})"
+    return f" (exit {error.returncode}: {printable(error.diagnostic)})"
 
 
 def ssh_error_message(error: Exception) -> str:

@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from vulpnix.cli import app
+from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
@@ -272,7 +273,7 @@ class FullScanWidthTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch_supplementary_collectors(app),
-            patch("vulpnix.scan.orchestrator.current_privilege_context", return_value=PrivilegeContext(1000, "ROOTLESS")),
+            patch("vulpnix.context.execution.current_privilege_context", return_value=PrivilegeContext(1000, "ROOTLESS")),
             patch.object(app, "collect_network_snapshot", return_value=NetworkSnapshot((ListeningEndpoint("tcp", "LISTEN", "0.0.0.0", 22, "ALL INTERFACES", None, None),), "test fixture", False, ("process ownership may be incomplete without elevated privileges",))),
             patch.object(
                 app,
@@ -288,7 +289,7 @@ class FullScanWidthTests(unittest.TestCase):
                 ),
             ),
             patch.object(app, "terminal_size", return_value=(width, 40)),
-            patch.object(app, "collect_system_info", return_value=sample_report().host),
+            patch.object(host_area, "collect_system_info", return_value=sample_report().host),
             patch.object(app, "collect_local_users", return_value=()),
             patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),

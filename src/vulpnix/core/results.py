@@ -27,6 +27,9 @@ class Fact:
     """One observed value, with an optional judgment decided by the area.
 
     ``key`` is stable and machine-readable; ``label`` is for people.
+    ``value`` is display text. ``raw`` is the observed value in its natural
+    type (for example uptime in seconds) when the text would lose information;
+    it is ``None`` when the value was not available.
     ``status`` is set only when the area has an evidence-backed judgment for
     this value. Renderers must never infer a status from ``label`` or ``value``.
     """
@@ -35,6 +38,7 @@ class Fact:
     label: str
     value: str
     status: FindingStatus | None = None
+    raw: str | int | float | bool | None = None
 
 
 @dataclass(frozen=True, slots=True)

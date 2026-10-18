@@ -18,7 +18,6 @@ from vulpnix.collectors import (
     collect_setid_files,
     collect_services,
     collect_sudo_privileges,
-    collect_system_info,
     collect_sysctl_observations,
     collect_network_snapshot,
     collect_network_interfaces,
@@ -82,9 +81,11 @@ from vulpnix.rules.filesystem import (
     assess_setid_files,
 )
 from vulpnix.rules import verified_privileged_accounts
+from vulpnix.areas.host import HostArea
 from vulpnix.areas.ssh import SSHConfigArea, SSHHostKeyArea
 from vulpnix.cli.legacy_bridge import area_result_to_scan_result
 from vulpnix.context import current_execution_context
+from vulpnix.core.text import display_text
 from vulpnix.engine import run_area
 
 from vulpnix.scan.orchestrator import ScanOrchestrator
@@ -310,12 +311,7 @@ def _clear_screen() -> None:
 
 def _display_value(value: str | None) -> str:
     """Keep locally collected text on one safe, readable terminal line."""
-    if not value:
-        return "Unavailable"
-    safe_value = "".join(character if character.isprintable() else "�" for character in value)
-    if len(safe_value) > 80:
-        return safe_value[:77] + "…"
-    return safe_value
+    return display_text(value)
 
 
 def _section(title: str) -> None:
@@ -323,22 +319,6 @@ def _section(title: str) -> None:
     rule_width = min(max(terminal_size()[0], 1), _SECTION_WIDTH)
     print(f"\n{accent(title, bold=True)}")
     print(f"{'─' * rule_width}")
-
-
-def _format_uptime(seconds: float | None) -> str:
-    if seconds is None:
-        return "Unavailable"
-    minutes = int(seconds // 60)
-    days, remaining_minutes = divmod(minutes, 24 * 60)
-    hours, remaining_minutes = divmod(remaining_minutes, 60)
-    parts = []
-    if days:
-        parts.append(f"{days}d")
-    if hours:
-        parts.append(f"{hours}h")
-    if remaining_minutes or not parts:
-        parts.append(f"{remaining_minutes}m")
-    return " ".join(parts)
 
 
 _REPORT_EXPORT_FORMAT: str | None = None
@@ -851,11 +831,14 @@ def _run_network_result(*, details: bool = False):
     return _combine_results(socket_result, interface_result, firewall_result)
 
 
-def _run_area_result(area, *, scope, details=False):
+def _run_area_result(area, *, scope, details=False, title=None):
     """Run one area through the Area contract and adapt it for the legacy report."""
     ctx = current_execution_context()
+    result = run_area(area, ctx)
+    if title is not None:
+        result = replace(result, title=title)
     return area_result_to_scan_result(
-        run_area(area, ctx),
+        result,
         privilege=ctx.privilege,
         scope=scope,
         details=details,
@@ -883,32 +866,9 @@ def _run_unit_file_result(services: tuple[Service, ...], *, details: bool = Fals
 
 
 def _show_host_assessment(title: str = "SYSTEM", *, details: bool = False) -> bool:
-    try:
-        result = _make_orchestrator().run_host(
-            collector=collect_system_info,
-            section_builder=lambda info: ReportSection(
-                title=title,
-                facts=(
-                    ("Hostname", _display_value(info.hostname)),
-                    ("Distribution", _display_value(info.distribution) + (f" ({_display_value(info.distribution_version)})" if info.distribution_version else "")),
-                    ("Kernel", _display_value(info.kernel_release)),
-                    ("Architecture", _display_value(info.architecture)),
-                    ("Uptime", _format_uptime(info.uptime_seconds)),
-                ),
-            ),
-        )
-    except NotImplementedError:
-        result = _make_orchestrator()._result(
-            sections=(ReportSection(title=title, status="NOT_ASSESSED", message="Host facts are supported on Linux only."),),
-            scope=("system facts",), review_items=1,
-        )
-        _render_result(result)
-        return False
-    except (OSError, UnicodeError, ValueError) as error:
-        result = _make_orchestrator()._result(
-            sections=(ReportSection(title=title, status="NOT_ASSESSED", message=_display_value(str(error))),),
-            scope=("system facts",), review_items=1,
-        )
+    result = _run_area_result(HostArea(), scope=("system facts",), title=title)
+    if result.host is None:
+        # Host facts could not be collected: report that and stop, as before.
         _render_result(result)
         return False
     if details:
@@ -1850,50 +1810,30 @@ def _show_scan(*, detailed: bool = False) -> None:
         services_seen.append(services)
         return _service_report_section(services, detailed=detailed)
 
-    try:
-        result = _make_orchestrator().run_full_scan(
-            users_section_builder=lambda users, sudo: _user_report_section(users, sudo, detailed=detailed),
-            filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
-                results, assessment, coverage, setid, detailed_findings=detailed, detailed_metadata=detailed
-            ),
-            service_section_builder=service_section,
-            host_section_builder=lambda info: ReportSection(
-                title="SYSTEM",
-                facts=(
-                    ("Hostname", _display_value(info.hostname)),
-                    ("Distribution", _display_value(info.distribution) + (f" ({_display_value(info.distribution_version)})" if info.distribution_version else "")),
-                    ("Kernel", _display_value(info.kernel_release)),
-                    ("Architecture", _display_value(info.architecture)),
-                    ("Uptime", _format_uptime(info.uptime_seconds)),
-                ),
-            ),
-            host_collector=collect_system_info,
-            services_collector=collect_services,
-            users_collector=collect_local_users,
-            sudo_collector=collect_sudo_privileges,
-            sensitive_file_collector=collect_sensitive_file_metadata,
-            sensitive_file_assessor=assess_sensitive_files,
-            setid_collector=collect_setid_files,
-            setid_assessor=assess_setid_files,
+    host_result = _run_area_result(HostArea(), scope=("system facts",))
+    if host_result.host is None:
+        # Without host facts the full assessment is not attempted.
+        _render_result(
+            replace(host_result, scope=("system facts", "full assessment")),
+            details=detailed,
         )
-    except NotImplementedError:
-        result = _make_orchestrator()._result(
-            sections=(ReportSection("SYSTEM", status="NOT_ASSESSED", message="Full host assessment is supported on Linux only."),),
-            scope=("system facts", "full assessment"),
-            coverage=AssessmentCoverage.PARTIAL,
-            review_items=1,
-        )
-        _render_result(result, details=detailed)
         return
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        result = _make_orchestrator()._result(
-            sections=(ReportSection("SYSTEM", status="NOT_ASSESSED", message=f"Host information could not be collected reliably: {_display_value(str(error))}"),),
-            scope=("system facts", "full assessment"),
-            coverage=AssessmentCoverage.PARTIAL,
-            review_items=1,
-        )
-        _render_result(result, details=detailed)
-        return
+
+    scan_result = _make_orchestrator().run_full_scan(
+        users_section_builder=lambda users, sudo: _user_report_section(users, sudo, detailed=detailed),
+        filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
+            results, assessment, coverage, setid, detailed_findings=detailed, detailed_metadata=detailed
+        ),
+        service_section_builder=service_section,
+        services_collector=collect_services,
+        users_collector=collect_local_users,
+        sudo_collector=collect_sudo_privileges,
+        sensitive_file_collector=collect_sensitive_file_metadata,
+        sensitive_file_assessor=assess_sensitive_files,
+        setid_collector=collect_setid_files,
+        setid_assessor=assess_setid_files,
+    )
+    result = _combine_results(host_result, scan_result)
 
     extras = [
         _run_ssh_config_result(),

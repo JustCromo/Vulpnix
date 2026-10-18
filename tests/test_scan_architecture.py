@@ -3,7 +3,6 @@ from unittest.mock import Mock
 
 from vulpnix.cli.report import ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
-from vulpnix.models import SystemInfo
 from vulpnix.scan.orchestrator import ScanOrchestrator
 from vulpnix.scan.progress import ScanStage
 from vulpnix.scan.privilege import PrivilegeContext
@@ -94,10 +93,7 @@ class ScanArchitectureTests(unittest.TestCase):
         self.assertGreater(result.review_items, 0)
 
     def test_full_scan_has_all_sections_and_final_coverage(self):
-        system = SystemInfo("host", "Linux", "1", "kernel", "x86_64", 60)
         result = ScanOrchestrator().run_full_scan(
-            host_collector=lambda: system,
-            host_section_builder=lambda info: ReportSection("SYSTEM"),
             service_section_builder=lambda _: ReportSection("SERVICES"),
             users_section_builder=lambda *_: ReportSection("USERS"),
             filesystem_section_builder=lambda *_: ReportSection("FILESYSTEM"),
@@ -109,7 +105,7 @@ class ScanArchitectureTests(unittest.TestCase):
             setid_collector=lambda: __import__("vulpnix.models", fromlist=["FilesystemCoverage", "CoverageStatus"]).FilesystemCoverage((), __import__("vulpnix.models", fromlist=["CoverageStatus"]).CoverageStatus.COLLECTED, ("/usr",), 0, 0.0),
             setid_assessor=lambda _: __import__("vulpnix.rules.filesystem", fromlist=["SetIdAssessment"]).SetIdAssessment(0, 0, 0, (), ()),
         )
-        self.assertEqual([section.title for section in result.sections], ["SYSTEM", "SERVICES", "USERS", "FILESYSTEM"])
+        self.assertEqual([section.title for section in result.sections], ["SERVICES", "USERS", "FILESYSTEM"])
         self.assertEqual(result.coverage, AssessmentCoverage.COMPLETE)
         self.assertEqual(result.review_items, 0)
 
