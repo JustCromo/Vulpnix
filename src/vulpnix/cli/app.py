@@ -17,7 +17,6 @@ from vulpnix.collectors import (
     collect_sensitive_file_metadata,
     collect_setid_files,
     collect_services,
-    collect_ssh_config,
     collect_sudo_privileges,
     collect_system_info,
     collect_sysctl_observations,
@@ -27,7 +26,6 @@ from vulpnix.collectors import (
     collect_ssh_host_key_metadata,
     collect_service_unit_file_metadata,
 )
-from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
 from vulpnix.collectors.package_audit import collect_package_audit
 from vulpnix.collectors.packages import collect_package_inventory
 from vulpnix.collectors.storage import collect_storage_snapshot
@@ -38,7 +36,6 @@ from vulpnix.models import (
     FileMetadata,
     FileMetadataResult,
     FileMetadataStatus,
-    SSHConfig,
     Service,
     SudoPrivilege,
     SudoPrivilegeStatus,
@@ -53,7 +50,7 @@ from vulpnix.models import (
     UnitFileAssessment,
 )
 from vulpnix import __version__
-from vulpnix.findings import Finding, FindingStatus
+from vulpnix.findings import FindingStatus
 from vulpnix.cli.terminal import (
     copy_text_to_clipboard,
     extract_selected_text,
@@ -86,13 +83,11 @@ from vulpnix.rules.filesystem import (
     assess_sensitive_files,
     assess_setid_files,
 )
-from vulpnix.rules import (
-    check_ssh_empty_passwords,
-    check_ssh_password_authentication,
-    check_ssh_public_key_authentication,
-    check_ssh_root_login,
-    verified_privileged_accounts,
-)
+from vulpnix.rules import verified_privileged_accounts
+from vulpnix.areas.ssh import SSHConfigArea
+from vulpnix.cli.legacy_bridge import area_result_to_scan_result
+from vulpnix.context import current_execution_context
+from vulpnix.engine import run_area
 
 from vulpnix.scan.orchestrator import ScanOrchestrator
 from vulpnix.risk import assess_findings
@@ -1590,63 +1585,20 @@ def _show_filesystem_assessment(*, detailed: bool = False) -> None:
 
 
 
-def _ssh_error_message(error: Exception) -> str:
-    if isinstance(error, FileNotFoundError):
-        return "OpenSSH server (sshd) is not installed."
-    if isinstance(error, subprocess.TimeoutExpired):
-        return "sshd did not return configuration in time."
-    if isinstance(error, SSHGUnsupportedError):
-        detail = _ssh_command_detail(error)
-        option = getattr(error, "option", "-G")
-        return (
-            f"sshd {option} is not supported by this OpenSSH installation."
-            f"{detail}"
-        )
-    if isinstance(error, SSHCommandError):
-        option = getattr(error, "option", "-G")
-        return f"sshd {option} failed{_ssh_command_detail(error)}."
-    if isinstance(error, subprocess.CalledProcessError):
-        return "sshd -G could not print the effective configuration."
-    if isinstance(error, (UnicodeError, ValueError)):
-        return "sshd returned unreadable configuration data."
-    return "SSH configuration is unavailable."
-
-
-def _ssh_command_detail(error: SSHCommandError) -> str:
-    if not error.diagnostic:
-        return f" (exit {error.returncode})"
-    detail = "".join(
-        character if character.isprintable() else "�"
-        for character in error.diagnostic
+def _run_ssh_config_result():
+    """Run the SSH area through the Area contract and adapt it for the legacy report."""
+    ctx = current_execution_context()
+    return area_result_to_scan_result(
+        run_area(SSHConfigArea(), ctx),
+        privilege=ctx.privilege,
+        scope=("SSH configuration",),
     )
-    return f" (exit {error.returncode}: {detail})"
 
 
 def _show_ssh_assessment(*, detailed: bool = False) -> int:
-    try:
-        result = _make_orchestrator().run_ssh(
-            section_builder=_ssh_report_section,
-            findings_builder=_ssh_findings,
-            ssh_collector=collect_ssh_config,
-        )
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        result = _make_orchestrator()._result(
-            sections=(ReportSection("SSH", status="NOT_ASSESSED", message=_ssh_error_message(error)),),
-            scope=("SSH configuration",), coverage=AssessmentCoverage.PARTIAL, review_items=1,
-        )
-    result = _combine_results(result, _run_ssh_host_key_result(details=detailed))
+    result = _combine_results(_run_ssh_config_result(), _run_ssh_host_key_result(details=detailed))
     _render_result(result, details=detailed)
     return len(result.findings)
-
-
-def _ssh_findings(ssh_config: SSHConfig) -> tuple[Finding, ...]:
-    """Run the existing SSH checks and return their findings unchanged."""
-    return (
-        *check_ssh_root_login(ssh_config),
-        *check_ssh_password_authentication(ssh_config),
-        *check_ssh_empty_passwords(ssh_config),
-        *check_ssh_public_key_authentication(ssh_config),
-    )
 
 
 def _service_report_section(services: tuple[Service, ...], *, detailed: bool = False) -> ReportSection:
@@ -1690,27 +1642,6 @@ def _service_report_section(services: tuple[Service, ...], *, detailed: bool = F
         items_label=("Active now and enabled to start at boot:" if startup_services else None),
         footer=("Use scan service --details to inspect unit-file ownership and permissions." if not detailed else "Unit-file metadata checks are performed separately below."),
     )
-
-
-def _ssh_report_section(config: SSHConfig) -> ReportSection:
-    root_login = {
-        "yes": "yes",
-        "no": "no",
-        "prohibit-password": "key login only",
-        "forced-commands-only": "restricted key login only",
-    }[config.permit_root_login]
-    return ReportSection(
-        title="SSH",
-        table=(
-            ("Root login", root_login),
-            ("Password authentication", "yes" if config.password_authentication else "no"),
-            ("Public-key authentication", "yes" if config.public_key_authentication else "no"),
-            ("Empty passwords", "yes" if config.permit_empty_passwords else "no"),
-        ),
-        footer="Values are global sshd options; Match rules may vary by connection.",
-    )
-
-
 
 
 def _package_inventory_report_section(inventory, *, details=False):
@@ -1954,8 +1885,6 @@ def _show_scan(*, detailed: bool = False) -> None:
             filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
                 results, assessment, coverage, setid, detailed_findings=detailed, detailed_metadata=detailed
             ),
-            ssh_section_builder=_ssh_report_section,
-            ssh_findings_builder=_ssh_findings,
             service_section_builder=service_section,
             host_section_builder=lambda info: ReportSection(
                 title="SYSTEM",
@@ -1975,7 +1904,6 @@ def _show_scan(*, detailed: bool = False) -> None:
             sensitive_file_assessor=assess_sensitive_files,
             setid_collector=collect_setid_files,
             setid_assessor=assess_setid_files,
-            ssh_collector=collect_ssh_config,
         )
     except NotImplementedError:
         result = _make_orchestrator()._result(
@@ -1997,6 +1925,7 @@ def _show_scan(*, detailed: bool = False) -> None:
         return
 
     extras = [
+        _run_ssh_config_result(),
         _run_hardening_result(details=detailed),
         _run_network_result(details=detailed),
         _run_ssh_host_key_result(details=detailed),

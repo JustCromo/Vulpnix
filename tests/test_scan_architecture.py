@@ -10,28 +10,6 @@ from vulpnix.scan.privilege import PrivilegeContext
 
 
 class ScanArchitectureTests(unittest.TestCase):
-    def test_ssh_review_finding_marks_result_as_partial(self):
-        from vulpnix.findings import Finding, FindingStatus
-
-        finding = Finding(
-            rule_id="SSH-TEST-001",
-            title="SSH password authentication needs review",
-            evidence="Password authentication is enabled",
-            explanation="Review whether password login is required.",
-            recommendation="Prefer key-based authentication where appropriate.",
-            status=FindingStatus.REVIEW,
-        )
-
-        result = ScanOrchestrator().run_ssh(
-            section_builder=lambda _: ReportSection("SSH"),
-            findings_builder=lambda _: (finding,),
-            ssh_collector=lambda: object(),
-        )
-
-        self.assertEqual(result.coverage, AssessmentCoverage.PARTIAL)
-        self.assertEqual(result.review_items, 0)
-        self.assertEqual(result.findings, (finding,))
-
     def test_known_non_boolean_unit_states_are_not_counted_as_unknown(self):
         from vulpnix.cli.app import _service_report_section
         from vulpnix.models import Service
@@ -123,8 +101,6 @@ class ScanArchitectureTests(unittest.TestCase):
             service_section_builder=lambda _: ReportSection("SERVICES"),
             users_section_builder=lambda *_: ReportSection("USERS"),
             filesystem_section_builder=lambda *_: ReportSection("FILESYSTEM"),
-            ssh_section_builder=lambda _: ReportSection("SSH"),
-            ssh_findings_builder=lambda _: (),
             services_collector=lambda: (),
             users_collector=lambda: (),
             sudo_collector=lambda _: (),
@@ -132,9 +108,8 @@ class ScanArchitectureTests(unittest.TestCase):
             sensitive_file_assessor=lambda _: __import__("vulpnix.rules.filesystem", fromlist=["FilesystemAssessment"]).FilesystemAssessment((), (), ()),
             setid_collector=lambda: __import__("vulpnix.models", fromlist=["FilesystemCoverage", "CoverageStatus"]).FilesystemCoverage((), __import__("vulpnix.models", fromlist=["CoverageStatus"]).CoverageStatus.COLLECTED, ("/usr",), 0, 0.0),
             setid_assessor=lambda _: __import__("vulpnix.rules.filesystem", fromlist=["SetIdAssessment"]).SetIdAssessment(0, 0, 0, (), ()),
-            ssh_collector=lambda: None,
         )
-        self.assertEqual([section.title for section in result.sections], ["SYSTEM", "SERVICES", "USERS", "FILESYSTEM", "SSH"])
+        self.assertEqual([section.title for section in result.sections], ["SYSTEM", "SERVICES", "USERS", "FILESYSTEM"])
         self.assertEqual(result.coverage, AssessmentCoverage.COMPLETE)
         self.assertEqual(result.review_items, 0)
 

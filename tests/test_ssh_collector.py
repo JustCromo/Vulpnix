@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors.ssh import (
     SSHCommandError,
@@ -170,11 +171,11 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
             patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "collect_services", return_value=()),
-            patch.object(app, "collect_ssh_config", side_effect=unsupported),
-            patch.object(app, "check_ssh_root_login") as root_rule,
-            patch.object(app, "check_ssh_password_authentication") as password_rule,
-            patch.object(app, "check_ssh_empty_passwords") as empty_rule,
-            patch.object(app, "check_ssh_public_key_authentication") as key_rule,
+            patch.object(ssh_area, "collect_ssh_config", side_effect=unsupported),
+            patch.object(ssh_area, "check_ssh_root_login") as root_rule,
+            patch.object(ssh_area, "check_ssh_password_authentication") as password_rule,
+            patch.object(ssh_area, "check_ssh_empty_passwords") as empty_rule,
+            patch.object(ssh_area, "check_ssh_public_key_authentication") as key_rule,
             redirect_stdout(output),
         ):
             app._show_scan()
@@ -195,7 +196,11 @@ class SSHCommandTests(unittest.TestCase):
 
     def test_help_lists_ssh_as_a_scan_subcommand(self) -> None:
         output = io.StringIO()
-        with redirect_stdout(output):
+        # Fix the width: the help layout wraps descriptions to the terminal.
+        with (
+            patch.object(app, "terminal_size", return_value=(120, 40)),
+            redirect_stdout(output),
+        ):
             app._show_help()
 
         rendered = output.getvalue()
@@ -268,7 +273,7 @@ class SSHCommandTests(unittest.TestCase):
             patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "collect_services", return_value=()) as services,
-            patch.object(app, "collect_ssh_config", return_value=ssh_config) as ssh,
+            patch.object(ssh_area, "collect_ssh_config", return_value=ssh_config) as ssh,
             redirect_stdout(output),
         ):
             keep_running = app._dispatch_command("scan")
@@ -290,11 +295,11 @@ class SSHCommandTests(unittest.TestCase):
         )
         output = io.StringIO()
         with (
-            patch.object(app, "collect_ssh_config", return_value=config),
-            patch.object(app, "check_ssh_root_login", return_value=()),
-            patch.object(app, "check_ssh_password_authentication", return_value=()),
-            patch.object(app, "check_ssh_empty_passwords", return_value=()),
-            patch.object(app, "check_ssh_public_key_authentication", return_value=()),
+            patch.object(ssh_area, "collect_ssh_config", return_value=config),
+            patch.object(ssh_area, "check_ssh_root_login", return_value=()),
+            patch.object(ssh_area, "check_ssh_password_authentication", return_value=()),
+            patch.object(ssh_area, "check_ssh_empty_passwords", return_value=()),
+            patch.object(ssh_area, "check_ssh_public_key_authentication", return_value=()),
             patch.object(app, "collect_ssh_host_key_metadata", return_value=()),
             redirect_stdout(output),
         ):

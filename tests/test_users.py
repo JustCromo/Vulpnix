@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors.users import collect_local_users
 from vulpnix.models import SudoGrant, SudoPrivilege, SudoPrivilegeStatus
@@ -116,7 +117,7 @@ class UsersCLItests(unittest.TestCase):
     def test_scan_users_dispatches_only_user_assessment(self) -> None:
         with (
             patch.object(app, "_show_users_assessment") as show_users,
-            patch.object(app, "collect_ssh_config") as ssh,
+            patch.object(ssh_area, "collect_ssh_config") as ssh,
             patch.object(app, "collect_services") as services,
         ):
             self.assertTrue(app._dispatch_command("scan users"))
@@ -248,7 +249,7 @@ class UsersCLItests(unittest.TestCase):
             patch.object(app, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_services", return_value=()),
             patch.object(
-                app,
+                ssh_area,
                 "collect_ssh_config",
                 return_value=SSHConfig("no", False, False, True),
             ),

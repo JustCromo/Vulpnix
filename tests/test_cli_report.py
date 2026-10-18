@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from vulpnix.cli import app
+from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.cli.report import ReportSection, ScanReport, render_scan_report
 from vulpnix.cli.terminal import accent, color, display_width
@@ -311,7 +312,7 @@ class FullScanWidthTests(unittest.TestCase):
                 ),
             ),
             patch.object(
-                app,
+                ssh_area,
                 "collect_ssh_config",
                 return_value=SSHConfig(
                     permit_root_login="prohibit-password",

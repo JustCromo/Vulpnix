@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.ssh import area as ssh_area
 from vulpnix.findings import FindingStatus
 from vulpnix.models import (
     ListeningEndpoint,
@@ -177,12 +178,12 @@ class ExtendedScanCommandTests(unittest.TestCase):
             for index in range(1, 10)
         )
         rule_patches = (
-            patch.object(app, "collect_ssh_config", return_value=config),
+            patch.object(ssh_area, "collect_ssh_config", return_value=config),
             patch.object(app, "collect_ssh_host_key_metadata", return_value=keys),
-            patch.object(app, "check_ssh_root_login", return_value=()),
-            patch.object(app, "check_ssh_password_authentication", return_value=()),
-            patch.object(app, "check_ssh_empty_passwords", return_value=()),
-            patch.object(app, "check_ssh_public_key_authentication", return_value=()),
+            patch.object(ssh_area, "check_ssh_root_login", return_value=()),
+            patch.object(ssh_area, "check_ssh_password_authentication", return_value=()),
+            patch.object(ssh_area, "check_ssh_empty_passwords", return_value=()),
+            patch.object(ssh_area, "check_ssh_public_key_authentication", return_value=()),
         )
         compact = io.StringIO()
         with rule_patches[0], rule_patches[1], rule_patches[2], rule_patches[3], rule_patches[4], rule_patches[5], redirect_stdout(compact):

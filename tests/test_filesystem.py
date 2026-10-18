@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors import filesystem
 from vulpnix.collectors.filesystem import collect_sensitive_file_metadata
@@ -348,7 +349,7 @@ class FilesystemCLITests(unittest.TestCase):
             patch.object(app, "collect_sensitive_file_metadata", return_value=records),
             patch.object(app, "collect_setid_files", return_value=empty_coverage()),
             patch.object(app, "collect_services", return_value=()),
-            patch.object(app, "collect_ssh_config", return_value=SSHConfig("no", False, False, True)),
+            patch.object(ssh_area, "collect_ssh_config", return_value=SSHConfig("no", False, False, True)),
             contextlib.redirect_stdout(output),
         ):
             app._show_scan()

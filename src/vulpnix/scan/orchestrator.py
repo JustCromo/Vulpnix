@@ -17,13 +17,11 @@ from vulpnix.collectors.hardening import collect_sysctl_observations
 from vulpnix.collectors.network import collect_network_snapshot
 from vulpnix.collectors.ssh_keys import collect_ssh_host_key_metadata
 from vulpnix.collectors.systemd_security import collect_service_unit_file_metadata
-from vulpnix.findings import Finding, FindingStatus
+from vulpnix.findings import Finding
 from vulpnix.parsers.systemd import UNIT_FILE_NON_BOOLEAN_STATES
-from vulpnix.collectors.ssh import SSHCommandError, SSHGUnsupportedError
 from vulpnix.models import (
     FileMetadataResult,
     FilesystemCoverage,
-    SSHConfig,
     Service,
     SudoPrivilege,
     SudoPrivilegeStatus,
@@ -51,12 +49,9 @@ from vulpnix.scan.result import ScanResult
 
 UsersCollector = Callable[[], tuple[User, ...]]
 SudoCollector = Callable[[tuple[User, ...]], tuple[SudoPrivilege, ...]]
-SSHCollector = Callable[[], SSHConfig]
 HostCollector = Callable[[], SystemInfo]
 ServicesCollector = Callable[[], tuple[Service, ...]]
 UsersSectionBuilder = Callable[[tuple[User, ...], tuple[SudoPrivilege, ...]], ReportSection]
-SSHSectionBuilder = Callable[[SSHConfig], ReportSection]
-SSHFindingsBuilder = Callable[[SSHConfig], tuple[Finding, ...]]
 FilesystemSectionBuilder = Callable[
     [tuple[FileMetadataResult, ...], FilesystemAssessment, FilesystemCoverage, SetIdAssessment],
     ReportSection,
@@ -157,40 +152,6 @@ class ScanOrchestrator:
             scope=("users", "privileges"),
             coverage=AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE,
             review_items=review_items,
-        )
-
-    def run_ssh(self, *, section_builder: SSHSectionBuilder, findings_builder: SSHFindingsBuilder, ssh_collector: SSHCollector) -> ScanResult:
-        self._emit(ScanStage.STARTING, "Starting SSH assessment")
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting SSH configuration")
-            config = ssh_collector()
-            self._emit(ScanStage.ASSESSING, "Assessing SSH configuration")
-            section = section_builder(config)
-            findings = findings_builder(config)
-        except (OSError, UnicodeError, ValueError) as error:
-            self._emit(ScanStage.ERROR, f"SSH assessment failed: {error}")
-            raise
-        has_unresolved_findings = any(
-            finding.status in {
-                FindingStatus.REVIEW,
-                FindingStatus.NOT_ASSESSED,
-                FindingStatus.ERROR,
-            }
-            for finding in findings
-        )
-        coverage = (
-            AssessmentCoverage.PARTIAL
-            if has_unresolved_findings
-            else AssessmentCoverage.COMPLETE
-        )
-        self._emit(ScanStage.COMPLETED, "SSH assessment completed")
-        return self._result(
-            sections=(section,),
-            findings=findings,
-            scope=("SSH configuration",),
-            coverage=coverage,
-            # Findings are counted separately from additional review items.
-            review_items=0,
         )
 
     def run_filesystem(self, *, section_builder: FilesystemSectionBuilder, sensitive_file_collector: Callable[[], tuple[FileMetadataResult, ...]] = collect_sensitive_file_metadata, sensitive_file_assessor: Callable[[tuple[FileMetadataResult, ...]], FilesystemAssessment] = assess_sensitive_files, setid_collector: Callable[[], FilesystemCoverage] = collect_setid_files, setid_assessor: Callable[[FilesystemCoverage], SetIdAssessment] = assess_setid_files) -> ScanResult:
@@ -339,8 +300,6 @@ class ScanOrchestrator:
         *,
         users_section_builder: UsersSectionBuilder,
         filesystem_section_builder: FilesystemSectionBuilder,
-        ssh_section_builder: SSHSectionBuilder,
-        ssh_findings_builder: SSHFindingsBuilder,
         service_section_builder: ServiceSectionBuilder,
         host_section_builder: HostSectionBuilder,
         host_collector: HostCollector = collect_system_info,
@@ -351,19 +310,18 @@ class ScanOrchestrator:
         sensitive_file_assessor: Callable[[tuple[FileMetadataResult, ...]], FilesystemAssessment] = assess_sensitive_files,
         setid_collector: Callable[[], FilesystemCoverage] = collect_setid_files,
         setid_assessor: Callable[[FilesystemCoverage], SetIdAssessment] = assess_setid_files,
-        ssh_collector: SSHCollector,
     ) -> ScanResult:
-        self._emit(ScanStage.STARTING, "Starting full Linux assessment", total=9)
+        self._emit(ScanStage.STARTING, "Starting full Linux assessment", total=7)
         sections: list[ReportSection] = []
         findings: list[Finding] = []
         review_items = 0
 
-        self._emit(ScanStage.COLLECTING, "Collecting host facts", completed=1, total=9)
+        self._emit(ScanStage.COLLECTING, "Collecting host facts", completed=1, total=7)
         host = host_collector()
         sections.append(host_section_builder(host))
 
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting services", completed=2, total=9)
+            self._emit(ScanStage.COLLECTING, "Collecting services", completed=2, total=7)
             services = services_collector()
             sections.append(service_section_builder(services))
             review_items += self._service_review_items(services)
@@ -372,9 +330,9 @@ class ScanOrchestrator:
             review_items += 1
 
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting local accounts", completed=3, total=9)
+            self._emit(ScanStage.COLLECTING, "Collecting local accounts", completed=3, total=7)
             users = users_collector()
-            self._emit(ScanStage.COLLECTING, "Collecting privilege information", completed=4, total=9)
+            self._emit(ScanStage.COLLECTING, "Collecting privilege information", completed=4, total=7)
             sudo = sudo_collector(users)
             sections.append(users_section_builder(users, sudo))
             review_items += self._user_review_items(users, sudo)
@@ -383,11 +341,11 @@ class ScanOrchestrator:
             review_items += 1
 
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting sensitive file metadata", completed=5, total=9)
+            self._emit(ScanStage.COLLECTING, "Collecting sensitive file metadata", completed=5, total=7)
             file_results = sensitive_file_collector()
-            self._emit(ScanStage.ASSESSING, "Assessing sensitive file metadata", completed=6, total=9)
+            self._emit(ScanStage.ASSESSING, "Assessing sensitive file metadata", completed=6, total=7)
             fs_assessment = sensitive_file_assessor(file_results)
-            self._emit(ScanStage.COLLECTING, "Collecting set-ID files", completed=7, total=9)
+            self._emit(ScanStage.COLLECTING, "Collecting set-ID files", completed=7, total=7)
             setid_coverage = setid_collector()
             setid_assessment = setid_assessor(setid_coverage)
             sections.append(filesystem_section_builder(file_results, fs_assessment, setid_coverage, setid_assessment))
@@ -399,31 +357,13 @@ class ScanOrchestrator:
             sections.append(ReportSection("FILESYSTEM", status="NOT_ASSESSED", message="Filesystem checks could not be fully assessed with the current privileges."))
             review_items += 1
 
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting SSH configuration", completed=8, total=9)
-            config = ssh_collector()
-            self._emit(ScanStage.ASSESSING, "Assessing SSH configuration", completed=9, total=9)
-            sections.append(ssh_section_builder(config))
-            findings.extend(ssh_findings_builder(config))
-        except (OSError, UnicodeError, ValueError, SSHCommandError) as error:
-            if isinstance(error, SSHCommandError):
-                detail = "".join(ch if ch.isprintable() else "�" for ch in error.diagnostic)
-                if isinstance(error, SSHGUnsupportedError):
-                    message = f"sshd {error.option} is not supported by this OpenSSH installation (exit {error.returncode}: {detail})"
-                else:
-                    message = f"sshd {error.option} failed (exit {error.returncode}: {detail})"
-            else:
-                message = str(error) or "SSH configuration is unavailable."
-            sections.append(ReportSection("SSH", status="NOT_ASSESSED", message=message))
-            review_items += 1
-
         coverage = AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE
-        self._emit(ScanStage.COMPLETED, "Full Linux assessment completed", completed=9, total=9)
+        self._emit(ScanStage.COMPLETED, "Full Linux assessment completed", completed=7, total=7)
         return self._result(
             host=host,
             sections=tuple(sections),
             findings=tuple(findings),
-            scope=("system facts", "users", "services", "SSH configuration", "filesystem metadata", "set-ID files"),
+            scope=("system facts", "users", "services", "filesystem metadata", "set-ID files"),
             coverage=coverage,
             review_items=review_items,
         )

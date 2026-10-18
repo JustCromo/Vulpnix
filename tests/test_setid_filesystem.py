@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors import setid
 from vulpnix.collectors.setid import collect_setid_files
@@ -350,7 +351,7 @@ class SetIdCliTests(unittest.TestCase):
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "collect_setid_files", return_value=coverage),
             patch.object(app, "collect_services", return_value=()),
-            patch.object(app, "collect_ssh_config", return_value=SSHConfig("no", False, False, True)),
+            patch.object(ssh_area, "collect_ssh_config", return_value=SSHConfig("no", False, False, True)),
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
         ):
