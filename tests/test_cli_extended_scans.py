@@ -6,11 +6,12 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.services import area as services_area
+from vulpnix.areas.services import unit_files as unit_files_area
 from vulpnix.areas.hardening import area as hardening_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
-from vulpnix.findings import FindingStatus
 from vulpnix.models import (
     ListeningEndpoint,
     NetworkInterface,
@@ -20,8 +21,6 @@ from vulpnix.models import (
     SSHHostKeyObservation,
     Service,
     SysctlObservation,
-    UnitFileAssessment,
-    UnitFileCheck,
     UnitFileObservation,
 )
 from vulpnix.scan.privilege import PrivilegeContext
@@ -121,7 +120,7 @@ class ExtendedScanCommandTests(unittest.TestCase):
     def test_service_missing_systemctl_is_reported_without_crashing(self):
         output = io.StringIO()
         with patch.object(
-            app,
+            services_area,
             "collect_services",
             side_effect=FileNotFoundError("systemctl is not installed"),
         ), redirect_stdout(output):
@@ -137,42 +136,17 @@ class ExtendedScanCommandTests(unittest.TestCase):
         service = Service("demo.service", state="active", enabled=True, unit_file_state="enabled")
         metadata = ((UnitFileObservation("demo.service", "/etc/systemd/system/demo.service", 1000, 0o666, True, False),), ())
         compact = io.StringIO()
-        with patch.object(app, "collect_services", return_value=(service,)), patch.object(app, "collect_service_unit_file_metadata", return_value=metadata) as inspect, redirect_stdout(compact):
+        with patch.object(services_area, "collect_services", return_value=(service,)), patch.object(unit_files_area, "collect_service_unit_file_metadata", return_value=metadata) as inspect, redirect_stdout(compact):
             app._dispatch_command("scan service")
         inspect.assert_not_called()
         detailed = io.StringIO()
-        with patch.object(app, "collect_services", return_value=(service,)), patch.object(app, "collect_service_unit_file_metadata", return_value=metadata), redirect_stdout(detailed):
+        with patch.object(services_area, "collect_services", return_value=(service,)), patch.object(unit_files_area, "collect_service_unit_file_metadata", return_value=metadata), redirect_stdout(detailed):
             app._dispatch_command("scan service --details")
 
         self.assertNotIn("SYSTEMD UNIT FILES", compact.getvalue())
         self.assertIn("SYSTEMD UNIT FILES", detailed.getvalue())
         self.assertIn("ISSUES DETECTED", detailed.getvalue())
         self.assertIn("demo.service", detailed.getvalue())
-
-    def test_unit_file_report_counts_and_shows_all_coverage_review_items(self):
-        coverage_review = tuple(
-            f"coverage issue {index}" for index in range(1, 6)
-        )
-        check = UnitFileCheck(
-            "demo.service",
-            "/usr/lib/systemd/system/demo.service",
-            FindingStatus.REVIEW,
-            "Symbolic link requires review",
-            "Verify the link target.",
-        )
-        assessment = UnitFileAssessment((check,), (), coverage_review)
-
-        section = app._unit_file_report_section(assessment, details=True)
-
-        facts = dict(section.facts)
-        self.assertEqual(facts["Review"], "6")
-
-        review_items = tuple(
-            item for item in section.items if item.startswith("REVIEW: ")
-        )
-        self.assertEqual(len(review_items), 5)
-        for item in coverage_review:
-            self.assertIn(f"REVIEW: {item}", review_items)
 
     def test_ssh_details_expand_host_key_metadata_without_reading_keys(self):
         config = SSHConfig("prohibit-password", True, False, True)

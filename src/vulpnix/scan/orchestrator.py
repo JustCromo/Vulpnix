@@ -6,21 +6,15 @@ import subprocess
 from vulpnix.cli.report import ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.collectors import (
-    collect_services,
     collect_setid_files,
     collect_sensitive_file_metadata,
 )
 from vulpnix.collectors.network import collect_network_snapshot
-from vulpnix.collectors.systemd_security import collect_service_unit_file_metadata
 from vulpnix.findings import Finding
-from vulpnix.parsers.systemd import UNIT_FILE_NON_BOOLEAN_STATES
 from vulpnix.models import (
     FileMetadataResult,
     FilesystemCoverage,
-    Service,
     NetworkSnapshot,
-    UnitFileAssessment,
-    UnitFileObservation,
 )
 from vulpnix.rules.filesystem import (
     FilesystemAssessment,
@@ -28,19 +22,15 @@ from vulpnix.rules.filesystem import (
     assess_sensitive_files,
     assess_setid_files,
 )
-from vulpnix.rules.systemd_security import assess_systemd_unit_metadata
 from vulpnix.context import current_execution_context
 from vulpnix.scan.progress import ScanProgress, ScanStage
 from vulpnix.scan.result import ScanResult
 
-ServicesCollector = Callable[[], tuple[Service, ...]]
 FilesystemSectionBuilder = Callable[
     [tuple[FileMetadataResult, ...], FilesystemAssessment, FilesystemCoverage, SetIdAssessment],
     ReportSection,
 ]
-ServiceSectionBuilder = Callable[[tuple[Service, ...]], ReportSection]
 NetworkSectionBuilder = Callable[[NetworkSnapshot], ReportSection]
-UnitFileSectionBuilder = Callable[[UnitFileAssessment], ReportSection]
 
 
 class ScanOrchestrator:
@@ -57,41 +47,6 @@ class ScanOrchestrator:
 
     def _result(self, **kwargs: object) -> ScanResult:
         return ScanResult(privilege=self._privilege, **kwargs)
-
-    @staticmethod
-    def _service_review_items(services: tuple[Service, ...]) -> int:
-        def needs_review(service: Service) -> bool:
-            unit_state = (service.unit_file_state or "").strip().lower()
-            state_unknown = (
-                service.state is not None
-                and service.state.strip().lower() in {"unknown", ""}
-            )
-            enablement_unknown = (
-                service.enabled is None
-                and unit_state not in UNIT_FILE_NON_BOOLEAN_STATES
-            )
-            return state_unknown or enablement_unknown
-
-        return sum(needs_review(service) for service in services)
-
-    def run_services(self, *, collector: ServicesCollector = collect_services, section_builder: ServiceSectionBuilder) -> ScanResult:
-        self._emit(ScanStage.STARTING, "Starting services assessment")
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting services")
-            services = collector()
-            self._emit(ScanStage.ASSESSING, "Assessing service state")
-            section = section_builder(services)
-        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-            self._emit(ScanStage.ERROR, f"Services assessment failed: {error}")
-            raise
-        self._emit(ScanStage.COMPLETED, "Services assessment completed")
-        review_items = self._service_review_items(services)
-        return self._result(
-            sections=(section,),
-            scope=("services",),
-            coverage=AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE,
-            review_items=review_items,
-        )
 
     def run_filesystem(self, *, section_builder: FilesystemSectionBuilder, sensitive_file_collector: Callable[[], tuple[FileMetadataResult, ...]] = collect_sensitive_file_metadata, sensitive_file_assessor: Callable[[tuple[FileMetadataResult, ...]], FilesystemAssessment] = assess_sensitive_files, setid_collector: Callable[[], FilesystemCoverage] = collect_setid_files, setid_assessor: Callable[[FilesystemCoverage], SetIdAssessment] = assess_setid_files) -> ScanResult:
         self._emit(ScanStage.STARTING, "Starting filesystem assessment")
@@ -146,42 +101,11 @@ class ScanOrchestrator:
             review_items=max(len(snapshot.review), 1 if bool(snapshot.endpoints) and not snapshot.process_attribution_complete else 0),
         )
 
-    def run_service_unit_security(
-        self,
-        *,
-        services: tuple[Service, ...],
-        section_builder: UnitFileSectionBuilder,
-        collector: Callable[[tuple[Service, ...]], tuple[tuple[UnitFileObservation, ...], tuple[str, ...]]] = collect_service_unit_file_metadata,
-    ) -> ScanResult:
-        """Inspect service fragment and drop-in metadata without opening file contents."""
-        self._emit(ScanStage.STARTING, "Starting systemd unit-file assessment")
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting unit fragment/drop-in metadata")
-            observations, collection_review = collector(services)
-            self._emit(ScanStage.ASSESSING, "Checking unit ownership and write permissions")
-            assessment = assess_systemd_unit_metadata(observations, collection_review)
-            section = section_builder(assessment)
-        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-            self._emit(ScanStage.ERROR, f"Systemd unit-file assessment failed: {error}")
-            raise
-        self._emit(ScanStage.COMPLETED, "Systemd unit-file assessment completed")
-        incomplete = assessment.incomplete_checks or bool(collection_review)
-        unresolved_findings = sum(finding.status.name in {"NOT_ASSESSED", "ERROR"} for finding in assessment.findings)
-        extra_reviews = max(0, len(collection_review) - unresolved_findings)
-        return self._result(
-            sections=(section,),
-            findings=assessment.findings,
-            scope=("systemd unit-file metadata",),
-            coverage=AssessmentCoverage.PARTIAL if incomplete else AssessmentCoverage.COMPLETE,
-            review_items=extra_reviews,
-        )
-
     def run_full_scan(
         self,
         *,
         filesystem_section_builder: FilesystemSectionBuilder,
-        service_section_builder: ServiceSectionBuilder,
-        services_collector: ServicesCollector = collect_services,
+        services_result: Callable[[], ScanResult],
         users_result: Callable[[], ScanResult],
         sensitive_file_collector: Callable[[], tuple[FileMetadataResult, ...]] = collect_sensitive_file_metadata,
         sensitive_file_assessor: Callable[[tuple[FileMetadataResult, ...]], FilesystemAssessment] = assess_sensitive_files,
@@ -193,14 +117,13 @@ class ScanOrchestrator:
         findings: list[Finding] = []
         review_items = 0
 
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting services", completed=1, total=5)
-            services = services_collector()
-            sections.append(service_section_builder(services))
-            review_items += self._service_review_items(services)
-        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
-            sections.append(ReportSection("SERVICES", status="NOT_ASSESSED", message="Service information could not be collected with the current capabilities."))
-            review_items += 1
+        # Services are produced by the Services area; this seam disappears once
+        # the remaining areas are migrated.
+        self._emit(ScanStage.COLLECTING, "Collecting services", completed=1, total=5)
+        services = services_result()
+        sections.extend(services.sections)
+        findings.extend(services.findings)
+        review_items += services.review_items
 
         # Users are produced by the Users area; this seam disappears once the
         # remaining areas are migrated.

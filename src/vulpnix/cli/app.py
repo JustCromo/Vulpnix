@@ -15,29 +15,24 @@ except ImportError:
 from vulpnix.collectors import (
     collect_sensitive_file_metadata,
     collect_setid_files,
-    collect_services,
     collect_network_snapshot,
     collect_network_interfaces,
     collect_firewall_snapshot,
-    collect_service_unit_file_metadata,
 )
 from vulpnix.collectors.package_audit import collect_package_audit
 from vulpnix.collectors.packages import collect_package_inventory
 from vulpnix.collectors.storage import collect_storage_snapshot
-from vulpnix.parsers.systemd import UNIT_FILE_NON_BOOLEAN_STATES
 from vulpnix.models.storage import StorageStatus
 from vulpnix.rules.storage import assess_storage
 from vulpnix.models import (
     FileMetadata,
     FileMetadataResult,
     FileMetadataStatus,
-    Service,
     SystemInfo,
     FirewallObservation,
     FirewallSnapshot,
     NetworkInterfaceSnapshot,
     NetworkSnapshot,
-    UnitFileAssessment,
 )
 from vulpnix import __version__
 from vulpnix.findings import FindingStatus
@@ -75,6 +70,7 @@ from vulpnix.rules.filesystem import (
 )
 from vulpnix.areas.hardening import KernelHardeningArea
 from vulpnix.areas.host import HostArea
+from vulpnix.areas.services import ServicesArea, UnitFilesArea
 from vulpnix.areas.ssh import SSHConfigArea, SSHHostKeyArea
 from vulpnix.areas.users import UsersArea
 from vulpnix.cli.legacy_bridge import area_result_to_scan_result
@@ -609,41 +605,9 @@ def _firewall_policy_report_section(
     )
 
 
-def _unit_file_report_section(assessment: UnitFileAssessment, *, details: bool = False) -> ReportSection:
-    checks = assessment.checks
-    passed = sum(item.status is FindingStatus.PASS for item in checks)
-    failed = sum(item.status is FindingStatus.FAIL for item in checks)
-    review = sum(item.status is FindingStatus.REVIEW for item in checks)
-    review += len(assessment.review)
-    unavailable = sum(item.status in {FindingStatus.NOT_ASSESSED, FindingStatus.ERROR} for item in checks)
-    attention = tuple(item for item in checks if item.status is not FindingStatus.PASS)
-    shown = checks if details else attention[:8]
-    items = tuple(f"[{item.status.value}] {item.unit}: {item.evidence}" for item in shown)
-    if not items:
-        items = ("No unit-file metadata issues were identified in the collected scope." if checks else "No systemd unit-file metadata was available to inspect.",)
-    if assessment.review:
-        review_items = assessment.review if details else assessment.review[:3]
-        items += tuple(f"REVIEW: {item}" for item in review_items)
-        if not details and len(assessment.review) > len(review_items):
-            omitted = len(assessment.review) - len(review_items)
-            items += (
-                f"{omitted} additional coverage review item(s) omitted; "
-                "use --details to list them.",
-            )
-    if not details and len(attention) > len(shown):
-        items += (f"{len(attention) - len(shown)} additional item(s) omitted; use --details to list them.",)
-    return ReportSection(
-        title="SYSTEMD UNIT FILES",
-        facts=(("Files inspected", str(len(checks))), ("Metadata passed", str(passed)), ("Verified issues", str(failed)), ("Review", str(review)), ("Unavailable/error", str(unavailable))),
-        items=items,
-        items_label="Unit fragment/drop-in metadata:",
-        footer="File contents are not read. Writable or non-root-owned service definitions can affect privileged service execution.",
-    )
-
-
-def _run_hardening_result(*, details: bool = False):
+def _run_hardening_result(*, details: bool = False, ctx=None):
     return _run_area_result(
-        KernelHardeningArea(), scope=("kernel hardening",), details=details
+        KernelHardeningArea(), scope=("kernel hardening",), details=details, ctx=ctx
     )
 
 
@@ -772,9 +736,13 @@ def _run_network_result(*, details: bool = False):
     return _combine_results(socket_result, interface_result, firewall_result)
 
 
-def _run_area_result(area, *, scope, details=False, title=None):
-    """Run one area through the Area contract and adapt it for the legacy report."""
-    ctx = current_execution_context()
+def _run_area_result(area, *, scope, details=False, title=None, ctx=None):
+    """Run one area through the Area contract and adapt it for the legacy report.
+
+    A full scan passes one shared ``ctx`` so areas reuse each other's observations;
+    a single-area command gets a fresh one.
+    """
+    ctx = ctx or current_execution_context()
     result = run_area(area, ctx)
     if title is not None:
         result = replace(result, title=title)
@@ -786,24 +754,22 @@ def _run_area_result(area, *, scope, details=False, title=None):
     )
 
 
-def _run_ssh_host_key_result(*, details: bool = False):
+def _run_ssh_host_key_result(*, details: bool = False, ctx=None):
     return _run_area_result(
-        SSHHostKeyArea(), scope=("SSH host-key metadata",), details=details
+        SSHHostKeyArea(), scope=("SSH host-key metadata",), details=details, ctx=ctx
     )
 
 
-def _run_unit_file_result(services: tuple[Service, ...], *, details: bool = False):
-    try:
-        return _make_orchestrator().run_service_unit_security(
-            services=services,
-            collector=collect_service_unit_file_metadata,
-            section_builder=lambda assessment: _unit_file_report_section(assessment, details=details),
-        )
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        return _make_orchestrator()._result(
-            sections=(ReportSection("SYSTEMD UNIT FILES", status="NOT_ASSESSED", message=f"Unit-file metadata is unavailable: {_service_error_message(error)}"),),
-            scope=("systemd unit-file metadata",), coverage=AssessmentCoverage.PARTIAL, review_items=1,
-        )
+def _run_services_result(*, details: bool = False, ctx=None):
+    return _run_area_result(
+        ServicesArea(), scope=("services",), details=details, ctx=ctx
+    )
+
+
+def _run_unit_files_result(*, details: bool = False, ctx=None):
+    return _run_area_result(
+        UnitFilesArea(), scope=("systemd unit-file metadata",), details=details, ctx=ctx
+    )
 
 
 def _show_host_assessment(title: str = "SYSTEM", *, details: bool = False) -> bool:
@@ -818,41 +784,19 @@ def _show_host_assessment(title: str = "SYSTEM", *, details: bool = False) -> bo
     return True
 
 
-def _service_error_message(error: Exception) -> str:
-    if isinstance(error, FileNotFoundError):
-        return "systemctl is not installed."
-    if isinstance(error, subprocess.TimeoutExpired):
-        return "systemctl did not respond in time."
-    if isinstance(error, subprocess.CalledProcessError):
-        return "systemd could not be queried; access may be restricted."
-    if isinstance(error, (UnicodeError, ValueError)):
-        return "systemd returned unreadable service data."
-    return "systemd service data is unavailable."
+def _run_users_result(*, details: bool = False, ctx=None):
+    return _run_area_result(
+        UsersArea(), scope=("users", "privileges"), details=details, ctx=ctx
+    )
 
 
 def _show_service_assessment(*, detailed: bool = False) -> None:
-    collected: list[tuple[Service, ...]] = []
-
-    def build_section(services: tuple[Service, ...]) -> ReportSection:
-        collected.append(services)
-        return _service_report_section(services, detailed=detailed)
-
-    try:
-        result = _make_orchestrator().run_services(collector=collect_services, section_builder=build_section)
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        result = _make_orchestrator()._result(
-            sections=(ReportSection("SERVICES", status="NOT_ASSESSED", message=_service_error_message(error)),),
-            scope=("services",), coverage=AssessmentCoverage.PARTIAL, review_items=1,
-        )
-    if detailed and collected:
-        result = _combine_results(result, _run_unit_file_result(collected[0], details=True))
+    ctx = current_execution_context()
+    result = _run_services_result(details=detailed, ctx=ctx)
+    if detailed:
+        # Same context: the unit-file area reuses the service list just observed.
+        result = _combine_results(result, _run_unit_files_result(details=True, ctx=ctx))
     _render_result(result, details=detailed)
-
-
-def _run_users_result(*, details: bool = False):
-    return _run_area_result(
-        UsersArea(), scope=("users", "privileges"), details=details
-    )
 
 
 def _show_users_assessment(*, detailed: bool = False) -> None:
@@ -1255,57 +1199,14 @@ def _show_filesystem_assessment(*, detailed: bool = False) -> None:
 
 
 
-def _run_ssh_config_result():
-    return _run_area_result(SSHConfigArea(), scope=("SSH configuration",))
+def _run_ssh_config_result(ctx=None):
+    return _run_area_result(SSHConfigArea(), scope=("SSH configuration",), ctx=ctx)
 
 
 def _show_ssh_assessment(*, detailed: bool = False) -> int:
     result = _combine_results(_run_ssh_config_result(), _run_ssh_host_key_result(details=detailed))
     _render_result(result, details=detailed)
     return len(result.findings)
-
-
-def _service_report_section(services: tuple[Service, ...], *, detailed: bool = False) -> ReportSection:
-    active = sum(service.state == "active" for service in services)
-    inactive = sum(service.state == "inactive" for service in services)
-    other_state = len(services) - active - inactive
-    enabled = sum(service.enabled is True for service in services)
-    disabled = sum(service.enabled is False for service in services)
-    non_boolean_enabled = sum(
-        service.enabled is None
-        and (service.unit_file_state or "").strip().lower()
-        in UNIT_FILE_NON_BOOLEAN_STATES
-        for service in services
-    )
-    unknown_enabled = len(services) - enabled - disabled - non_boolean_enabled
-    startup_services = tuple(
-        _display_value(service.name)
-        for service in services
-        if service.state == "active" and service.unit_file_state == "enabled"
-    )
-    limit = 60 if detailed else 8
-    visible = startup_services[:limit]
-    if visible:
-        items = visible
-    else:
-        items = ("No active, startup-enabled services found.",)
-    if len(startup_services) > limit:
-        items += (f"{len(startup_services) - limit} additional service(s) omitted; use --details to list them.",)
-    return ReportSection(
-        title="SERVICES",
-        facts=(
-            ("Units", str(len(services))),
-            ("State", f"{active} active · {inactive} inactive · {other_state} other/unknown"),
-            (
-                "Startup enabled",
-                f"{enabled} yes · {disabled} no · "
-                f"{non_boolean_enabled} non-boolean · {unknown_enabled} unknown",
-            ),
-        ),
-        items=items,
-        items_label=("Active now and enabled to start at boot:" if startup_services else None),
-        footer=("Use scan service --details to inspect unit-file ownership and permissions." if not detailed else "Unit-file metadata checks are performed separately below."),
-    )
 
 
 def _package_inventory_report_section(inventory, *, details=False):
@@ -1537,13 +1438,8 @@ def _show_packages_assessment(*, detailed=False):
 
 def _show_scan(*, detailed: bool = False) -> None:
     """Run the full assessment and merge supplementary read-only checks."""
-    services_seen: list[tuple[Service, ...]] = []
-
-    def service_section(services: tuple[Service, ...]) -> ReportSection:
-        services_seen.append(services)
-        return _service_report_section(services, detailed=detailed)
-
-    host_result = _run_area_result(HostArea(), scope=("system facts",))
+    ctx = current_execution_context()  # one context: areas share observations
+    host_result = _run_area_result(HostArea(), scope=("system facts",), ctx=ctx)
     if host_result.host is None:
         # Without host facts the full assessment is not attempted.
         _render_result(
@@ -1556,9 +1452,8 @@ def _show_scan(*, detailed: bool = False) -> None:
         filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
             results, assessment, coverage, setid, detailed_findings=detailed, detailed_metadata=detailed
         ),
-        service_section_builder=service_section,
-        services_collector=collect_services,
-        users_result=lambda: _run_users_result(details=detailed),
+        services_result=lambda: _run_services_result(details=detailed, ctx=ctx),
+        users_result=lambda: _run_users_result(details=detailed, ctx=ctx),
         sensitive_file_collector=collect_sensitive_file_metadata,
         sensitive_file_assessor=assess_sensitive_files,
         setid_collector=collect_setid_files,
@@ -1567,15 +1462,13 @@ def _show_scan(*, detailed: bool = False) -> None:
     result = _combine_results(host_result, scan_result)
 
     extras = [
-        _run_ssh_config_result(),
-        _run_hardening_result(details=detailed),
+        _run_ssh_config_result(ctx=ctx),
+        _run_hardening_result(details=detailed, ctx=ctx),
         _run_network_result(details=detailed),
-        _run_ssh_host_key_result(details=detailed),
+        _run_ssh_host_key_result(details=detailed, ctx=ctx),
         _run_storage_result(details=detailed),
+        _run_unit_files_result(details=detailed, ctx=ctx),
     ]
-    if services_seen:
-        # Collect unit metadata once for all names already captured by the service scan.
-        extras.append(_run_unit_file_result(services_seen[0], details=detailed))
     result = _combine_results(result, *extras)
     result = _combine_results(
         result,

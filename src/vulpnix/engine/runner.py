@@ -1,24 +1,23 @@
-"""Run areas with failure isolation."""
+"""Run areas with failure isolation and output sanitization."""
 
 from __future__ import annotations
 
-import subprocess
-
 from vulpnix.context import ExecutionContext
 from vulpnix.core import AreaResult, AreaStatus, Gap
+from vulpnix.core.errors import EXPECTED_FAILURES
+from vulpnix.core.sanitize import sanitize_result
 from vulpnix.core.text import printable
 from vulpnix.engine.area import Area
 
-# Failures caused by the observed system (missing files, unreadable output,
-# failing commands). Anything else is a Vulpnix bug and must surface.
-EXPECTED_FAILURES = (OSError, subprocess.SubprocessError, UnicodeError, ValueError)
+__all__ = ["EXPECTED_FAILURES", "run_area"]
 
 
 def run_area(area: Area, ctx: ExecutionContext) -> AreaResult:
     """Run one area; an expected failure becomes an ERROR result, not a crash.
 
     An ERROR result is never a security verdict: it only records that the
-    area could not be assessed.
+    area could not be assessed. Whatever the area returns is sanitized here,
+    so observed data cannot reach a renderer with control characters in it.
     """
     try:
         result = area.run(ctx)
@@ -34,4 +33,4 @@ def run_area(area: Area, ctx: ExecutionContext) -> AreaResult:
         raise ValueError(
             f"Area {area.id!r} returned a result for {result.area_id!r}."
         )
-    return result
+    return sanitize_result(result)

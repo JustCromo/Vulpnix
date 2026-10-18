@@ -11,6 +11,7 @@ from types import SimpleNamespace
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.services import area as services_area
 from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
@@ -350,7 +351,7 @@ class FilesystemCLITests(unittest.TestCase):
             patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=records),
             patch.object(app, "collect_setid_files", return_value=empty_coverage()),
-            patch.object(app, "collect_services", return_value=()),
+            patch.object(services_area, "collect_services", return_value=()),
             patch.object(ssh_area, "collect_ssh_config", return_value=SSHConfig("no", False, False, True)),
             contextlib.redirect_stdout(output),
         ):

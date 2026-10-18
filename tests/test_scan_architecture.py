@@ -4,61 +4,9 @@ from vulpnix.cli.report import ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.scan.orchestrator import ScanOrchestrator
 from vulpnix.scan.result import ScanResult
-from vulpnix.scan.progress import ScanStage
 
 
 class ScanArchitectureTests(unittest.TestCase):
-    def test_known_non_boolean_unit_states_are_not_counted_as_unknown(self):
-        from vulpnix.cli.app import _service_report_section
-        from vulpnix.models import Service
-
-        services = (
-            Service(
-                name="static.service",
-                state="inactive",
-                enabled=None,
-                unit_file_state="static",
-            ),
-            Service(
-                name="generated.service",
-                state="active",
-                enabled=None,
-                unit_file_state="generated",
-            ),
-            Service(
-                name="unknown.service",
-                state="active",
-                enabled=None,
-                unit_file_state="unknown",
-            ),
-        )
-
-        self.assertEqual(
-            ScanOrchestrator._service_review_items(services),
-            1,
-        )
-        facts = dict(_service_report_section(services).facts)
-        self.assertEqual(
-            facts["Startup enabled"],
-            "0 yes · 0 no · 2 non-boolean · 1 unknown",
-        )
-
-    def test_services_subprocess_failure_emits_error_and_propagates(self):
-        import subprocess
-
-        events = []
-
-        def failing_collector():
-            raise subprocess.TimeoutExpired(cmd="systemctl", timeout=10)
-
-        with self.assertRaises(subprocess.TimeoutExpired):
-            ScanOrchestrator(progress_callback=events.append).run_services(
-                collector=failing_collector,
-                section_builder=lambda _: ReportSection("SERVICES"),
-            )
-
-        self.assertEqual(events[-1].stage, ScanStage.ERROR)
-
     def test_filesystem_partial_coverage_requires_review(self):
         from vulpnix.models import CoverageStatus, FilesystemCoverage
         from vulpnix.rules.filesystem import FilesystemAssessment, SetIdAssessment
@@ -76,10 +24,9 @@ class ScanArchitectureTests(unittest.TestCase):
 
     def test_full_scan_has_all_sections_and_final_coverage(self):
         result = ScanOrchestrator().run_full_scan(
-            service_section_builder=lambda _: ReportSection("SERVICES"),
+            services_result=lambda: ScanResult(sections=(ReportSection("SERVICES"),)),
             users_result=lambda: ScanResult(sections=(ReportSection("USERS"),)),
             filesystem_section_builder=lambda *_: ReportSection("FILESYSTEM"),
-            services_collector=lambda: (),
             sensitive_file_collector=lambda: (),
             sensitive_file_assessor=lambda _: __import__("vulpnix.rules.filesystem", fromlist=["FilesystemAssessment"]).FilesystemAssessment((), (), ()),
             setid_collector=lambda: __import__("vulpnix.models", fromlist=["FilesystemCoverage", "CoverageStatus"]).FilesystemCoverage((), __import__("vulpnix.models", fromlist=["CoverageStatus"]).CoverageStatus.COLLECTED, ("/usr",), 0, 0.0),

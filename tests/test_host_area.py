@@ -6,6 +6,7 @@ from unittest.mock import patch
 from vulpnix.areas.host import HostArea
 from vulpnix.areas.host import area as host_area
 from vulpnix.cli import app
+from vulpnix.areas.services import area as services_area
 from vulpnix.cli.legacy_bridge import area_result_to_scan_result
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.context import Environment, ExecutionContext
@@ -136,7 +137,7 @@ class HostCliTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(host_area, "collect_system_info", side_effect=NotImplementedError("Linux only")),
-            patch.object(app, "collect_services") as services,
+            patch.object(services_area, "collect_services") as services,
             redirect_stdout(output),
         ):
             app._dispatch_command("scan")

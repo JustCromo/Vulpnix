@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.services import area as services_area
 from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
@@ -120,7 +121,7 @@ class UsersCLItests(unittest.TestCase):
         with (
             patch.object(app, "_show_users_assessment") as show_users,
             patch.object(ssh_area, "collect_ssh_config") as ssh,
-            patch.object(app, "collect_services") as services,
+            patch.object(services_area, "collect_services") as services,
         ):
             self.assertTrue(app._dispatch_command("scan users"))
 
@@ -249,7 +250,7 @@ class UsersCLItests(unittest.TestCase):
             patch.object(host_area, "collect_system_info", return_value=SystemInfo()),
             patch.object(users_area, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
             patch.object(users_area, "collect_sudo_privileges", return_value=()),
-            patch.object(app, "collect_services", return_value=()),
+            patch.object(services_area, "collect_services", return_value=()),
             patch.object(
                 ssh_area,
                 "collect_ssh_config",

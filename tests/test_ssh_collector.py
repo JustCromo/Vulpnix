@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.services import area as services_area
 from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
@@ -173,7 +174,7 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
             patch.object(users_area, "collect_local_users", return_value=()),
             patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
-            patch.object(app, "collect_services", return_value=()),
+            patch.object(services_area, "collect_services", return_value=()),
             patch.object(ssh_area, "collect_ssh_config", side_effect=unsupported),
             patch.object(ssh_area, "check_ssh_root_login") as root_rule,
             patch.object(ssh_area, "check_ssh_password_authentication") as password_rule,
@@ -249,7 +250,7 @@ class SSHCommandTests(unittest.TestCase):
     def test_scan_service_shows_service_and_startup_state_only(self) -> None:
         units = (Service(name="example.service", state="active", unit_file_state="enabled"),)
         output = io.StringIO()
-        with patch.object(app, "collect_services", return_value=units), redirect_stdout(output):
+        with patch.object(services_area, "collect_services", return_value=units), redirect_stdout(output):
             keep_running = app._dispatch_command("scan service")
         self.assertTrue(keep_running)
         rendered = output.getvalue()
@@ -275,7 +276,7 @@ class SSHCommandTests(unittest.TestCase):
             patch.object(users_area, "collect_local_users", return_value=()),
             patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
-            patch.object(app, "collect_services", return_value=()) as services,
+            patch.object(services_area, "collect_services", return_value=()) as services,
             patch.object(ssh_area, "collect_ssh_config", return_value=ssh_config) as ssh,
             redirect_stdout(output),
         ):

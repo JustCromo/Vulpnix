@@ -17,7 +17,9 @@ from collections.abc import Callable
 from vulpnix.cli.report import ReportBlock, ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.core import AreaResult, AreaStatus, FindingStatus
+from vulpnix.core.text import display_text
 from vulpnix.models import SystemInfo
+from vulpnix.parsers.systemd import UNIT_FILE_NON_BOOLEAN_STATES
 from vulpnix.scan.privilege import PrivilegeContext
 from vulpnix.scan.result import ScanResult
 
@@ -100,6 +102,100 @@ def _hardening_section(result: AreaResult, details: bool) -> ReportSection:
         items_label="Items requiring attention:" if unresolved else "Assessment:",
         footer=" ".join(result.notes) or None,
         blocks=blocks,
+    )
+
+
+def _services_section(result: AreaResult, details: bool) -> ReportSection:
+    """State counts and the active, startup-enabled services, as before."""
+    records = result.records
+    total = len(records)
+    active = sum(record.get("state") == "active" for record in records)
+    inactive = sum(record.get("state") == "inactive" for record in records)
+    enabled = sum(record.get("enabled") is True for record in records)
+    disabled = sum(record.get("enabled") is False for record in records)
+    non_boolean = sum(
+        record.get("enabled") is None
+        and (record.get("unit_file_state") or "").strip().lower() in UNIT_FILE_NON_BOOLEAN_STATES
+        for record in records
+    )
+    unknown = total - enabled - disabled - non_boolean
+    startup_services = tuple(
+        display_text(record.label)
+        for record in records
+        if record.get("state") == "active" and record.get("unit_file_state") == "enabled"
+    )
+    limit = 60 if details else 8
+    items = startup_services[:limit] or ("No active, startup-enabled services found.",)
+    if len(startup_services) > limit:
+        items += (
+            f"{len(startup_services) - limit} additional service(s) omitted; "
+            "use --details to list them.",
+        )
+    return ReportSection(
+        title=result.title,
+        facts=(
+            ("Units", str(total)),
+            ("State", f"{active} active · {inactive} inactive · {total - active - inactive} other/unknown"),
+            (
+                "Startup enabled",
+                f"{enabled} yes · {disabled} no · {non_boolean} non-boolean · {unknown} unknown",
+            ),
+        ),
+        items=items,
+        items_label=("Active now and enabled to start at boot:" if startup_services else None),
+        footer=(
+            "Use scan service --details to inspect unit-file ownership and permissions."
+            if not details
+            else "Unit-file metadata checks are performed separately below."
+        ),
+    )
+
+
+def _unit_files_section(result: AreaResult, details: bool) -> ReportSection:
+    """Counts, an attention list and the collector's coverage notes, as before."""
+    records = result.records
+    passed = sum(record.status is FindingStatus.PASS for record in records)
+    failed = sum(record.status is FindingStatus.FAIL for record in records)
+    review_records = sum(record.status is FindingStatus.REVIEW for record in records)
+    unavailable = sum(
+        record.status in {FindingStatus.NOT_ASSESSED, FindingStatus.ERROR} for record in records
+    )
+    notes = tuple(gap.message for gap in result.gaps if gap.key.startswith("collection_review:"))
+    attention = tuple(record for record in records if record.status is not FindingStatus.PASS)
+    shown = records if details else attention[:8]
+    items = tuple(
+        f"[{record.status.value}] {record.get('unit')}: {record.get('evidence')}" for record in shown
+    )
+    if not items:
+        items = (
+            "No unit-file metadata issues were identified in the collected scope."
+            if records
+            else "No systemd unit-file metadata was available to inspect.",
+        )
+    if notes:
+        shown_notes = notes if details else notes[:3]
+        items += tuple(f"REVIEW: {note}" for note in shown_notes)
+        if not details and len(notes) > len(shown_notes):
+            items += (
+                f"{len(notes) - len(shown_notes)} additional coverage review item(s) omitted; "
+                "use --details to list them.",
+            )
+    if not details and len(attention) > len(shown):
+        items += (
+            f"{len(attention) - len(shown)} additional item(s) omitted; use --details to list them.",
+        )
+    return ReportSection(
+        title=result.title,
+        facts=(
+            ("Files inspected", str(len(records))),
+            ("Metadata passed", str(passed)),
+            ("Verified issues", str(failed)),
+            ("Review", str(review_records + len(notes))),
+            ("Unavailable/error", str(unavailable)),
+        ),
+        items=items,
+        items_label="Unit fragment/drop-in metadata:",
+        footer=" ".join(result.notes) or None,
     )
 
 
@@ -251,12 +347,17 @@ _LEGACY_SECTIONS: dict[str, Callable[[AreaResult, bool], ReportSection]] = {
     "host": _host_section,
     "hardening": _hardening_section,
     "users": _users_section,
+    "services": _services_section,
+    "unit_files": _unit_files_section,
 }
 
 
 def area_result_to_section(result: AreaResult, *, details: bool = False) -> ReportSection:
     """Convert one area into a legacy section."""
-    if result.status in {AreaStatus.NOT_ASSESSED, AreaStatus.ERROR}:
+    attempted = bool(result.facts or result.records)
+    if result.status in {AreaStatus.NOT_ASSESSED, AreaStatus.ERROR} and not attempted:
+        # Nothing was observed: one clear message. If the area did try (and every
+        # item failed), the full view below keeps showing what was attempted.
         return ReportSection(
             result.title,
             status=result.status.value,

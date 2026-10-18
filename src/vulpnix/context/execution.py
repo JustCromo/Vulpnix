@@ -8,12 +8,13 @@ environment is reported as UNKNOWN instead of guessed.
 from __future__ import annotations
 
 from collections.abc import Callable, Mapping
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
 import os
 from pathlib import Path
 import shutil
 
+from vulpnix.context.observations import ObservationCache
 from vulpnix.scan.privilege import PrivilegeContext, current_privilege_context
 
 
@@ -70,6 +71,7 @@ class ExecutionContext:
     privilege: PrivilegeContext
     environment: Environment
     which: Callable[[str], str | None] = shutil.which
+    observations: ObservationCache = field(default_factory=ObservationCache)
 
     @property
     def privileged(self) -> bool:

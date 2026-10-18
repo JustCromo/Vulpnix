@@ -175,11 +175,14 @@ class HardeningLegacyViewTests(unittest.TestCase):
         self.assertEqual(legacy.review_items, 1)
         self.assertEqual(legacy.findings, ())
 
-    def test_not_assessed_area_lists_every_reason(self):
+    def test_when_nothing_is_assessable_the_view_still_shows_every_unavailable_check(self):
         legacy, section = self._legacy(run(()), details=False)
-        self.assertEqual(section.status, "NOT_ASSESSED")
-        self.assertIn("kernel.dmesg_restrict", section.message)
+        facts = dict(section.facts)
+        self.assertEqual((facts["Parameters checked"], facts["Checks passing"]), ("14", "0"))
+        self.assertEqual(facts["Unavailable/error"], "14")
+        self.assertEqual(len(section.items), 7)  # six attention items plus the omitted note
         self.assertIs(legacy.coverage, AssessmentCoverage.PARTIAL)
+        self.assertEqual(legacy.review_items, 11)
 
 
 if __name__ == "__main__":
