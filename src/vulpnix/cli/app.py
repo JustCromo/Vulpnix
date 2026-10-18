@@ -18,7 +18,6 @@ from vulpnix.collectors import (
     collect_setid_files,
     collect_services,
     collect_sudo_privileges,
-    collect_sysctl_observations,
     collect_network_snapshot,
     collect_network_interfaces,
     collect_firewall_snapshot,
@@ -39,7 +38,6 @@ from vulpnix.models import (
     SudoPrivilegeStatus,
     SystemInfo,
     User,
-    HardeningAssessment,
     FirewallObservation,
     FirewallSnapshot,
     NetworkInterfaceSnapshot,
@@ -81,6 +79,7 @@ from vulpnix.rules.filesystem import (
     assess_setid_files,
 )
 from vulpnix.rules import verified_privileged_accounts
+from vulpnix.areas.hardening import KernelHardeningArea
 from vulpnix.areas.host import HostArea
 from vulpnix.areas.ssh import SSHConfigArea, SSHHostKeyArea
 from vulpnix.cli.legacy_bridge import area_result_to_scan_result
@@ -92,7 +91,6 @@ from vulpnix.scan.orchestrator import ScanOrchestrator
 from vulpnix.risk import assess_findings
 from vulpnix.scan.privilege import current_privilege_context
 from vulpnix.cli.summary import AssessmentCoverage
-from vulpnix.rules.hardening import assess_kernel_hardening
 from vulpnix.rules.firewall import assess_firewall_policy
 from vulpnix.scan.progress import ScanProgress, ScanStage
 from vulpnix.cli.mascot import (
@@ -402,51 +400,6 @@ def _combine_results(base, *extras):
     )
 
 
-def _hardening_report_section(assessment: HardeningAssessment, *, details: bool = False) -> ReportSection:
-    checks = assessment.checks
-    passed = sum(check.status is FindingStatus.PASS for check in checks)
-    failed = sum(check.status is FindingStatus.FAIL for check in checks)
-    review = sum(check.status is FindingStatus.REVIEW for check in checks)
-    unavailable = sum(check.status in {FindingStatus.NOT_ASSESSED, FindingStatus.ERROR} for check in checks)
-    unresolved = tuple(check for check in checks if check.status is not FindingStatus.PASS)
-    lines = tuple(
-        f"[{check.status.value}] {check.key}: "
-        f"observed={check.observed if check.observed is not None else 'unavailable'}; "
-        f"expected={check.expected}"
-        + (f" ({check.reason})" if check.reason else "")
-        for check in (checks if details else unresolved[:8])
-    )
-    items = tuple(
-        f"[{check.status.value}] {check.title}: "
-        f"{check.observed if check.observed is not None else 'unavailable'}"
-        for check in unresolved[:6]
-    )
-    if not items:
-        items = ("All available hardening parameters matched the defined checks.",)
-    elif len(unresolved) > len(items):
-        remaining = len(unresolved) - len(items)
-        if details:
-            message = f"{remaining} additional check(s) are included in CHECK DETAILS."
-        else:
-            message = f"{remaining} additional check(s) omitted; use --details to list them."
-        items += (message,)
-    blocks = (ReportBlock("CHECK DETAILS", lines=lines),) if details else ()
-    return ReportSection(
-        title="KERNEL HARDENING",
-        facts=(
-            ("Parameters checked", str(len(checks))),
-            ("Checks passing", str(passed)),
-            ("Verified concerns", str(failed)),
-            ("Context review", str(review)),
-            ("Unavailable/error", str(unavailable)),
-        ),
-        items=items,
-        items_label="Items requiring attention:" if unresolved else "Assessment:",
-        footer="Read-only sysctl checks. Role-dependent settings are marked REVIEW, not automatically treated as vulnerabilities.",
-        blocks=blocks,
-    )
-
-
 def _network_endpoint_text(endpoint) -> str:
     address = f"[{endpoint.address}]" if ":" in endpoint.address and not endpoint.address.startswith("[") else endpoint.address
     port = "?" if endpoint.port is None else str(endpoint.port)
@@ -694,16 +647,9 @@ def _unit_file_report_section(assessment: UnitFileAssessment, *, details: bool =
 
 
 def _run_hardening_result(*, details: bool = False):
-    try:
-        return _make_orchestrator().run_hardening(
-            collector=collect_sysctl_observations,
-            section_builder=lambda assessment: _hardening_report_section(assessment, details=details),
-        )
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        return _make_orchestrator()._result(
-            sections=(ReportSection("KERNEL HARDENING", status="NOT_ASSESSED", message=f"Kernel hardening data is unavailable: {_display_value(str(error))}"),),
-            scope=("kernel hardening",), coverage=AssessmentCoverage.PARTIAL, review_items=1,
-        )
+    return _run_area_result(
+        KernelHardeningArea(), scope=("kernel hardening",), details=details
+    )
 
 
 def _run_network_result(*, details: bool = False):

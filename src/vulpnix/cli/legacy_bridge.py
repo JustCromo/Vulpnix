@@ -14,7 +14,7 @@ from __future__ import annotations
 
 from collections.abc import Callable
 
-from vulpnix.cli.report import ReportSection
+from vulpnix.cli.report import ReportBlock, ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.core import AreaResult, AreaStatus, FindingStatus
 from vulpnix.models import SystemInfo
@@ -58,6 +58,51 @@ def _ssh_host_keys_section(result: AreaResult, details: bool) -> ReportSection:
     )
 
 
+def _hardening_section(result: AreaResult, details: bool) -> ReportSection:
+    """Counts, an attention list and (with details) every check, as before."""
+    facts = result.facts
+    passed = sum(fact.status is FindingStatus.PASS for fact in facts)
+    failed = sum(fact.status is FindingStatus.FAIL for fact in facts)
+    review = sum(fact.status is FindingStatus.REVIEW for fact in facts)
+    unavailable = sum(
+        fact.status in {FindingStatus.NOT_ASSESSED, FindingStatus.ERROR} for fact in facts
+    )
+    unresolved = tuple(fact for fact in facts if fact.status is not FindingStatus.PASS)
+    items = tuple(
+        f"[{fact.status.value}] {fact.label}: {fact.value}" for fact in unresolved[:6]
+    )
+    if not items:
+        items = ("All available hardening parameters matched the defined checks.",)
+    elif len(unresolved) > len(items):
+        remaining = len(unresolved) - len(items)
+        if details:
+            message = f"{remaining} additional check(s) are included in CHECK DETAILS."
+        else:
+            message = f"{remaining} additional check(s) omitted; use --details to list them."
+        items += (message,)
+    blocks = ()
+    if details:
+        lines = tuple(
+            f"[{fact.status.value}] {fact.key}: observed={fact.value}; {fact.detail}"
+            for fact in facts
+        )
+        blocks = (ReportBlock("CHECK DETAILS", lines=lines),)
+    return ReportSection(
+        title=result.title,
+        facts=(
+            ("Parameters checked", str(len(facts))),
+            ("Checks passing", str(passed)),
+            ("Verified concerns", str(failed)),
+            ("Context review", str(review)),
+            ("Unavailable/error", str(unavailable)),
+        ),
+        items=items,
+        items_label="Items requiring attention:" if unresolved else "Assessment:",
+        footer=" ".join(result.notes) or None,
+        blocks=blocks,
+    )
+
+
 def _host_section(result: AreaResult, details: bool) -> ReportSection:
     """The five identity rows the legacy view showed (environment is not shown)."""
     facts = {fact.key: fact for fact in result.facts}
@@ -94,6 +139,7 @@ def _system_info(result: AreaResult) -> SystemInfo | None:
 _LEGACY_SECTIONS: dict[str, Callable[[AreaResult, bool], ReportSection]] = {
     "ssh_host_keys": _ssh_host_keys_section,
     "host": _host_section,
+    "hardening": _hardening_section,
 }
 
 
@@ -103,7 +149,7 @@ def area_result_to_section(result: AreaResult, *, details: bool = False) -> Repo
         return ReportSection(
             result.title,
             status=result.status.value,
-            message=" ".join(gap.message for gap in result.gaps),
+            message="; ".join(gap.message for gap in result.gaps),
         )
     builder = _LEGACY_SECTIONS.get(result.area_id)
     if builder is not None:

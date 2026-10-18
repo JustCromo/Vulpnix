@@ -30,6 +30,8 @@ class Fact:
     ``value`` is display text. ``raw`` is the observed value in its natural
     type (for example uptime in seconds) when the text would lose information;
     it is ``None`` when the value was not available.
+    ``detail`` qualifies the value in prose (for example what was expected);
+    it is evidence for people, not something renderers should parse.
     ``status`` is set only when the area has an evidence-backed judgment for
     this value. Renderers must never infer a status from ``label`` or ``value``.
     """
@@ -39,6 +41,7 @@ class Fact:
     value: str
     status: FindingStatus | None = None
     raw: str | int | float | bool | None = None
+    detail: str | None = None
 
 
 @dataclass(frozen=True, slots=True)

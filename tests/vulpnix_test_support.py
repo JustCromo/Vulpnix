@@ -1,5 +1,6 @@
 """Deterministic fixtures shared by CLI integration tests."""
 
+from vulpnix.areas.hardening import area as hardening_area
 from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
 from vulpnix.collectors.hardening import HARDENING_KEYS
 from vulpnix.models import (
@@ -50,7 +51,7 @@ from unittest.mock import patch
 def patch_supplementary_collectors(app_module):
     """Prevent integration tests from touching the real host during full scans."""
     with ExitStack() as stack:
-        stack.enter_context(patch.object(app_module, "collect_sysctl_observations", lambda: safe_sysctl_observations()))
+        stack.enter_context(patch.object(hardening_area, "collect_sysctl_observations", lambda: safe_sysctl_observations()))
         stack.enter_context(patch.object(app_module, "collect_network_snapshot", lambda: empty_network_snapshot()))
         stack.enter_context(
             patch.object(

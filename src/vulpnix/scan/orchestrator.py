@@ -12,7 +12,6 @@ from vulpnix.collectors import (
     collect_sensitive_file_metadata,
     collect_sudo_privileges,
 )
-from vulpnix.collectors.hardening import collect_sysctl_observations
 from vulpnix.collectors.network import collect_network_snapshot
 from vulpnix.collectors.systemd_security import collect_service_unit_file_metadata
 from vulpnix.findings import Finding
@@ -24,7 +23,6 @@ from vulpnix.models import (
     SudoPrivilege,
     SudoPrivilegeStatus,
     User,
-    HardeningAssessment,
     NetworkSnapshot,
     UnitFileAssessment,
     UnitFileObservation,
@@ -35,7 +33,6 @@ from vulpnix.rules.filesystem import (
     assess_sensitive_files,
     assess_setid_files,
 )
-from vulpnix.rules.hardening import assess_kernel_hardening
 from vulpnix.rules.systemd_security import assess_systemd_unit_metadata
 from vulpnix.context import current_execution_context
 from vulpnix.scan.progress import ScanProgress, ScanStage
@@ -50,7 +47,6 @@ FilesystemSectionBuilder = Callable[
     ReportSection,
 ]
 ServiceSectionBuilder = Callable[[tuple[Service, ...]], ReportSection]
-HardeningSectionBuilder = Callable[[HardeningAssessment], ReportSection]
 NetworkSectionBuilder = Callable[[NetworkSnapshot], ReportSection]
 UnitFileSectionBuilder = Callable[[UnitFileAssessment], ReportSection]
 
@@ -159,36 +155,6 @@ class ScanOrchestrator:
             scope=("filesystem metadata", "set-ID files"),
             coverage=AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE,
             review_items=review_items,
-        )
-
-    def run_hardening(
-        self,
-        *,
-        section_builder: HardeningSectionBuilder,
-        collector: Callable[[], tuple] = collect_sysctl_observations,
-    ) -> ScanResult:
-        """Collect and assess a fixed allow-list of read-only kernel parameters."""
-        self._emit(ScanStage.STARTING, "Starting kernel hardening assessment")
-        try:
-            self._emit(ScanStage.COLLECTING, "Reading selected kernel parameters")
-            observations = collector()
-            self._emit(ScanStage.ASSESSING, "Assessing kernel hardening settings")
-            assessment = assess_kernel_hardening(observations)
-            section = section_builder(assessment)
-        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-            self._emit(ScanStage.ERROR, f"Kernel hardening assessment failed: {error}")
-            raise
-        self._emit(ScanStage.COMPLETED, "Kernel hardening assessment completed")
-        unresolved_findings = sum(
-            finding.status.name in {"NOT_ASSESSED", "ERROR"}
-            for finding in assessment.findings
-        )
-        return self._result(
-            sections=(section,),
-            findings=assessment.findings,
-            scope=("kernel hardening",),
-            coverage=AssessmentCoverage.PARTIAL if assessment.incomplete_checks else AssessmentCoverage.COMPLETE,
-            review_items=max(0, assessment.incomplete_checks - unresolved_findings),
         )
 
     def run_network(

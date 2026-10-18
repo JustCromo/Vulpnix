@@ -6,6 +6,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.hardening import area as hardening_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
@@ -30,10 +31,10 @@ class ExtendedScanCommandTests(unittest.TestCase):
     def test_hardening_default_is_compact_and_details_expands_checks(self):
         observations = (SysctlObservation("kernel.dmesg_restrict", "1"),)
         compact = io.StringIO()
-        with patch.object(app, "collect_sysctl_observations", return_value=observations), redirect_stdout(compact):
+        with patch.object(hardening_area, "collect_sysctl_observations", return_value=observations), redirect_stdout(compact):
             app._dispatch_command("scan hardening")
         detailed = io.StringIO()
-        with patch.object(app, "collect_sysctl_observations", return_value=observations), redirect_stdout(detailed):
+        with patch.object(hardening_area, "collect_sysctl_observations", return_value=observations), redirect_stdout(detailed):
             app._dispatch_command("scan hardening --details")
 
         self.assertIn("KERNEL HARDENING", compact.getvalue())
@@ -212,7 +213,7 @@ class ExtendedScanCommandTests(unittest.TestCase):
 
     def test_rootless_incomplete_scan_explicitly_recommends_elevation(self):
         compact = io.StringIO()
-        with patch.object(app, "collect_sysctl_observations", return_value=()), \
+        with patch.object(hardening_area, "collect_sysctl_observations", return_value=()), \
              patch("vulpnix.context.execution.current_privilege_context", return_value=PrivilegeContext(1000, "ROOTLESS")), \
              redirect_stdout(compact):
             app._dispatch_command("scan hardening")
