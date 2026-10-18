@@ -13,11 +13,9 @@ except ImportError:
     readline = None
 
 from vulpnix.collectors import (
-    collect_local_users,
     collect_sensitive_file_metadata,
     collect_setid_files,
     collect_services,
-    collect_sudo_privileges,
     collect_network_snapshot,
     collect_network_interfaces,
     collect_firewall_snapshot,
@@ -34,10 +32,7 @@ from vulpnix.models import (
     FileMetadataResult,
     FileMetadataStatus,
     Service,
-    SudoPrivilege,
-    SudoPrivilegeStatus,
     SystemInfo,
-    User,
     FirewallObservation,
     FirewallSnapshot,
     NetworkInterfaceSnapshot,
@@ -78,10 +73,10 @@ from vulpnix.rules.filesystem import (
     assess_sensitive_files,
     assess_setid_files,
 )
-from vulpnix.rules import verified_privileged_accounts
 from vulpnix.areas.hardening import KernelHardeningArea
 from vulpnix.areas.host import HostArea
 from vulpnix.areas.ssh import SSHConfigArea, SSHHostKeyArea
+from vulpnix.areas.users import UsersArea
 from vulpnix.cli.legacy_bridge import area_result_to_scan_result
 from vulpnix.context import current_execution_context
 from vulpnix.core.text import display_text
@@ -835,211 +830,6 @@ def _service_error_message(error: Exception) -> str:
     return "systemd service data is unavailable."
 
 
-def _user_report_section(
-    users: tuple[User, ...],
-    sudo_privileges: tuple[SudoPrivilege, ...] = (),
-    *,
-    detailed: bool = False,
-) -> ReportSection:
-    uid_zero = sum(user.uid == 0 for user in users)
-    sudo_by_account = {result.account: result for result in sudo_privileges}
-    privileged_users = verified_privileged_accounts(users, sudo_privileges)
-    known_privileged = len(privileged_users)
-    group_unavailable = sum(user.groups is None for user in users)
-    account_state_unavailable = sum(user.account_state is None for user in users)
-    uid_zero_users = tuple(user for user in users if user.uid == 0)
-    additional_uid_zero = tuple(
-        user for user in uid_zero_users if user.username != "root"
-    )
-    sudo_accounts = tuple(
-        result.account
-        for result in sudo_privileges
-        if result.status is SudoPrivilegeStatus.PRIVILEGES_FOUND and result.grants
-    )
-    assessment: list[str] = []
-    if not uid_zero_users:
-        assessment.append("No UID 0 accounts detected")
-    elif not additional_uid_zero:
-        assessment.append("✓ Only one UID 0 account detected: root")
-    else:
-        assessment.append(
-            "Additional UID 0 accounts detected: "
-            + ", ".join(user.username for user in additional_uid_zero)
-        )
-    if known_privileged:
-        assessment.append(
-            f"✓ Privileged access verified for {known_privileged} "
-            f"{'account' if known_privileged == 1 else 'accounts'}"
-        )
-    else:
-        assessment.append("No privileged accounts verified")
-    if sudo_accounts:
-        assessment.append(
-            f"✓ Sudo access verified for {len(sudo_accounts)} "
-            f"{'account' if len(sudo_accounts) == 1 else 'accounts'}"
-        )
-    else:
-        no_sudo_accounts = sum(
-            result.status is SudoPrivilegeStatus.NO_PRIVILEGES
-            for result in sudo_privileges
-        )
-        if no_sudo_accounts:
-            assessment.append(
-                f"No sudo access verified for {no_sudo_accounts} "
-                f"inspected {'account' if no_sudo_accounts == 1 else 'accounts'}"
-            )
-
-    review: list[str] = []
-    if additional_uid_zero:
-        review.append(
-            "Review authorization for additional UID 0 accounts: "
-            + ", ".join(user.username for user in additional_uid_zero)
-        )
-    sudo_unavailable = sum(
-        result.status is SudoPrivilegeStatus.UNAVAILABLE
-        for result in sudo_privileges
-    )
-    sudo_unevaluated = sum(
-        result.status is SudoPrivilegeStatus.NOT_ASSESSED
-        for result in sudo_privileges
-    )
-    if sudo_unavailable:
-        review.append("sudo is unavailable; sudo privileges could not be evaluated")
-    if sudo_unevaluated:
-        reason_messages = {
-            "non-interactive listing requires authentication":
-                "sudo listing requires authentication",
-            "permission denied while inspecting another account":
-                "permission denied while inspecting another account",
-            "other-account inspection skipped because current process permissions are insufficient":
-                "other-account inspection skipped; current process lacks permission",
-            "sudo output did not contain a recognized account listing":
-                "sudo output format was not recognized",
-            "sudo privilege listing timed out": "sudo listing timed out",
-            "sudo execution blocked by environment or runtime configuration":
-                "environment or sudo runtime configuration blocked inspection",
-            "sudo output could not be safely parsed":
-                "sudo output was malformed or unsupported",
-        }
-        reasons: dict[str, int] = {}
-        for result in sudo_privileges:
-            if result.status is SudoPrivilegeStatus.NOT_ASSESSED:
-                message = reason_messages.get(
-                    result.reason,
-                    "sudo privilege state could not be established",
-                )
-                reasons[message] = reasons.get(message, 0) + 1
-        for message, count in reasons.items():
-            review.append(
-                f"{count} {'account' if count == 1 else 'accounts'}: {message}"
-            )
-    if account_state_unavailable:
-        review.append(
-            f"{account_state_unavailable} "
-            f"{'account could' if account_state_unavailable == 1 else 'accounts could'} "
-            "not be evaluated for account state"
-        )
-    if group_unavailable:
-        review.append(
-            f"Group membership unavailable for {group_unavailable} "
-            f"{'account' if group_unavailable == 1 else 'accounts'}"
-        )
-    if not review:
-        review.append("No unresolved account information")
-
-    def privilege_label(user: User) -> str:
-        if user.uid == 0 or user.username in privileged_users:
-            return "yes"
-
-        sudo_result = sudo_by_account.get(user.username)
-        if user.privileged is False or (
-            sudo_result is not None
-            and sudo_result.status is SudoPrivilegeStatus.NO_PRIVILEGES
-        ):
-            return "no"
-
-        return "NOT_ASSESSED"
-
-    inventory = tuple(
-        " · ".join(
-            (
-                user.username,
-                f"UID {user.uid}",
-                f"GID {user.gid}",
-                "groups: " + (", ".join(user.groups) if user.groups is not None else "Unavailable"),
-                "shell: " + (user.shell or "Unavailable"),
-                "privileged: " + privilege_label(user),
-                "account state: " + (user.account_state or "NOT_ASSESSED"),
-                _sudo_detail(sudo_by_account.get(user.username)),
-            )
-        )
-        for user in users
-    )
-    details = ReportBlock(
-        title="DETAILS",
-        lists=(
-            ("UID 0", tuple(user.username for user in uid_zero_users)),
-            ("Privileged", privileged_users),
-            ("Sudo access", sudo_accounts),
-        ),
-    )
-    if detailed:
-        details = ReportBlock(
-            title="ACCOUNT INVENTORY",
-            lines=inventory or ("No local accounts found.",),
-        )
-    return ReportSection(
-        title="USERS",
-        facts=(
-            ("Local accounts", str(len(users))),
-            ("UID 0 accounts", str(uid_zero)),
-            ("Privileged accounts", str(known_privileged)),
-        ),
-        blocks=(
-            ReportBlock("ASSESSMENT", lines=tuple(assessment)),
-            ReportBlock("REVIEW", lines=tuple(review)),
-            details,
-        ),
-    )
-
-
-def _sudo_detail(result: SudoPrivilege | None) -> str:
-    if result is None:
-        return "sudo: NOT_ASSESSED"
-    if result.grants:
-        grant_details = tuple(
-            f"runas={','.join(grant.target_users)}"
-            + (
-                f":{','.join(grant.target_groups)}"
-                if grant.target_groups is not None
-                else ""
-            )
-            + " "
-            f"commands={','.join(grant.allowed_commands)}"
-            + (f" options={','.join(grant.options)}" if grant.options else "")
-            + (f" source={grant.source}" if grant.source else "")
-            for grant in result.grants
-        )
-        context = f" host={result.host}" if result.host else ""
-        return "sudo:" + context + " " + "; ".join(grant_details)
-    detail = result.status.value
-    if result.reason:
-        detail += f" ({result.reason})"
-    return f"sudo: {detail}"
-
-
-def _user_error_message(error: Exception) -> str:
-    if isinstance(error, FileNotFoundError):
-        return "The local passwd database could not be found."
-    if isinstance(error, PermissionError):
-        return "The local passwd database could not be read."
-    if isinstance(error, UnicodeError):
-        return "The local account database contains unreadable text."
-    if isinstance(error, ValueError):
-        return f"The local account database is malformed: {_display_value(str(error))}"
-    return "Local account data is unavailable."
-
-
 def _show_service_assessment(*, detailed: bool = False) -> None:
     collected: list[tuple[Service, ...]] = []
 
@@ -1059,17 +849,14 @@ def _show_service_assessment(*, detailed: bool = False) -> None:
     _render_result(result, details=detailed)
 
 
+def _run_users_result(*, details: bool = False):
+    return _run_area_result(
+        UsersArea(), scope=("users", "privileges"), details=details
+    )
+
+
 def _show_users_assessment(*, detailed: bool = False) -> None:
-    def build_section(users: tuple[User, ...], sudo_privileges: tuple[SudoPrivilege, ...]) -> ReportSection:
-        return _user_report_section(users, sudo_privileges, detailed=detailed)
-    try:
-        result = _make_orchestrator().run_users(section_builder=build_section, users_collector=collect_local_users, sudo_collector=collect_sudo_privileges)
-    except (OSError, UnicodeError, ValueError) as error:
-        result = _make_orchestrator()._result(
-            sections=(ReportSection("USERS", status="NOT_ASSESSED", message=_user_error_message(error)),),
-            scope=("users", "privileges"), review_items=1,
-        )
-    _render_result(result, details=detailed)
+    _render_result(_run_users_result(details=detailed), details=detailed)
 
 
 def _file_metadata_summary(metadata: FileMetadata) -> str:
@@ -1766,14 +1553,12 @@ def _show_scan(*, detailed: bool = False) -> None:
         return
 
     scan_result = _make_orchestrator().run_full_scan(
-        users_section_builder=lambda users, sudo: _user_report_section(users, sudo, detailed=detailed),
         filesystem_section_builder=lambda results, assessment, coverage, setid: _filesystem_report_section(
             results, assessment, coverage, setid, detailed_findings=detailed, detailed_metadata=detailed
         ),
         service_section_builder=service_section,
         services_collector=collect_services,
-        users_collector=collect_local_users,
-        sudo_collector=collect_sudo_privileges,
+        users_result=lambda: _run_users_result(details=detailed),
         sensitive_file_collector=collect_sensitive_file_metadata,
         sensitive_file_assessor=assess_sensitive_files,
         setid_collector=collect_setid_files,

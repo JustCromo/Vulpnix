@@ -1,6 +1,6 @@
 """Terminal-independent data model shared by areas, engine and renderers."""
 
-from vulpnix.core.results import AreaResult, AreaStatus, Fact, Gap
+from vulpnix.core.results import AreaResult, AreaStatus, Fact, Gap, Record
 from vulpnix.findings import CVEAssessment, CVSSScore, Finding, FindingStatus
 
 __all__ = [
@@ -12,4 +12,5 @@ __all__ = [
     "Finding",
     "FindingStatus",
     "Gap",
+    "Record",
 ]

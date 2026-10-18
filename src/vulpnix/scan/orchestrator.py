@@ -6,11 +6,9 @@ import subprocess
 from vulpnix.cli.report import ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.collectors import (
-    collect_local_users,
     collect_services,
     collect_setid_files,
     collect_sensitive_file_metadata,
-    collect_sudo_privileges,
 )
 from vulpnix.collectors.network import collect_network_snapshot
 from vulpnix.collectors.systemd_security import collect_service_unit_file_metadata
@@ -20,9 +18,6 @@ from vulpnix.models import (
     FileMetadataResult,
     FilesystemCoverage,
     Service,
-    SudoPrivilege,
-    SudoPrivilegeStatus,
-    User,
     NetworkSnapshot,
     UnitFileAssessment,
     UnitFileObservation,
@@ -38,10 +33,7 @@ from vulpnix.context import current_execution_context
 from vulpnix.scan.progress import ScanProgress, ScanStage
 from vulpnix.scan.result import ScanResult
 
-UsersCollector = Callable[[], tuple[User, ...]]
-SudoCollector = Callable[[tuple[User, ...]], tuple[SudoPrivilege, ...]]
 ServicesCollector = Callable[[], tuple[Service, ...]]
-UsersSectionBuilder = Callable[[tuple[User, ...], tuple[SudoPrivilege, ...]], ReportSection]
 FilesystemSectionBuilder = Callable[
     [tuple[FileMetadataResult, ...], FilesystemAssessment, FilesystemCoverage, SetIdAssessment],
     ReportSection,
@@ -65,13 +57,6 @@ class ScanOrchestrator:
 
     def _result(self, **kwargs: object) -> ScanResult:
         return ScanResult(privilege=self._privilege, **kwargs)
-
-    @staticmethod
-    def _user_review_items(users: tuple[User, ...], sudo: tuple[SudoPrivilege, ...]) -> int:
-        return sum(user.groups is None or user.account_state is None for user in users) + sum(
-            result.status in {SudoPrivilegeStatus.UNAVAILABLE, SudoPrivilegeStatus.NOT_ASSESSED}
-            for result in sudo
-        )
 
     @staticmethod
     def _service_review_items(services: tuple[Service, ...]) -> int:
@@ -104,27 +89,6 @@ class ScanOrchestrator:
         return self._result(
             sections=(section,),
             scope=("services",),
-            coverage=AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE,
-            review_items=review_items,
-        )
-
-    def run_users(self, *, section_builder: UsersSectionBuilder, users_collector: UsersCollector = collect_local_users, sudo_collector: SudoCollector = collect_sudo_privileges) -> ScanResult:
-        self._emit(ScanStage.STARTING, "Starting users assessment")
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting local accounts")
-            users = users_collector()
-            self._emit(ScanStage.COLLECTING, "Collecting privilege information")
-            sudo_privileges = sudo_collector(users)
-            self._emit(ScanStage.ASSESSING, "Assessing users and privileges")
-            section = section_builder(users, sudo_privileges)
-        except (OSError, UnicodeError, ValueError) as error:
-            self._emit(ScanStage.ERROR, f"Users assessment failed: {error}")
-            raise
-        self._emit(ScanStage.COMPLETED, "Users assessment completed")
-        review_items = self._user_review_items(users, sudo_privileges)
-        return self._result(
-            sections=(section,),
-            scope=("users", "privileges"),
             coverage=AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE,
             review_items=review_items,
         )
@@ -215,24 +179,22 @@ class ScanOrchestrator:
     def run_full_scan(
         self,
         *,
-        users_section_builder: UsersSectionBuilder,
         filesystem_section_builder: FilesystemSectionBuilder,
         service_section_builder: ServiceSectionBuilder,
         services_collector: ServicesCollector = collect_services,
-        users_collector: UsersCollector = collect_local_users,
-        sudo_collector: SudoCollector = collect_sudo_privileges,
+        users_result: Callable[[], ScanResult],
         sensitive_file_collector: Callable[[], tuple[FileMetadataResult, ...]] = collect_sensitive_file_metadata,
         sensitive_file_assessor: Callable[[tuple[FileMetadataResult, ...]], FilesystemAssessment] = assess_sensitive_files,
         setid_collector: Callable[[], FilesystemCoverage] = collect_setid_files,
         setid_assessor: Callable[[FilesystemCoverage], SetIdAssessment] = assess_setid_files,
     ) -> ScanResult:
-        self._emit(ScanStage.STARTING, "Starting full Linux assessment", total=6)
+        self._emit(ScanStage.STARTING, "Starting full Linux assessment", total=5)
         sections: list[ReportSection] = []
         findings: list[Finding] = []
         review_items = 0
 
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting services", completed=1, total=6)
+            self._emit(ScanStage.COLLECTING, "Collecting services", completed=1, total=5)
             services = services_collector()
             sections.append(service_section_builder(services))
             review_items += self._service_review_items(services)
@@ -240,23 +202,20 @@ class ScanOrchestrator:
             sections.append(ReportSection("SERVICES", status="NOT_ASSESSED", message="Service information could not be collected with the current capabilities."))
             review_items += 1
 
-        try:
-            self._emit(ScanStage.COLLECTING, "Collecting local accounts", completed=2, total=6)
-            users = users_collector()
-            self._emit(ScanStage.COLLECTING, "Collecting privilege information", completed=3, total=6)
-            sudo = sudo_collector(users)
-            sections.append(users_section_builder(users, sudo))
-            review_items += self._user_review_items(users, sudo)
-        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError):
-            sections.append(ReportSection("USERS", status="NOT_ASSESSED", message="User and privilege information could not be fully collected."))
-            review_items += 1
+        # Users are produced by the Users area; this seam disappears once the
+        # remaining areas are migrated.
+        self._emit(ScanStage.COLLECTING, "Collecting local accounts and privileges", completed=2, total=5)
+        users = users_result()
+        sections.extend(users.sections)
+        findings.extend(users.findings)
+        review_items += users.review_items
 
         try:
-            self._emit(ScanStage.COLLECTING, "Collecting sensitive file metadata", completed=4, total=6)
+            self._emit(ScanStage.COLLECTING, "Collecting sensitive file metadata", completed=3, total=5)
             file_results = sensitive_file_collector()
-            self._emit(ScanStage.ASSESSING, "Assessing sensitive file metadata", completed=5, total=6)
+            self._emit(ScanStage.ASSESSING, "Assessing sensitive file metadata", completed=4, total=5)
             fs_assessment = sensitive_file_assessor(file_results)
-            self._emit(ScanStage.COLLECTING, "Collecting set-ID files", completed=6, total=6)
+            self._emit(ScanStage.COLLECTING, "Collecting set-ID files", completed=5, total=5)
             setid_coverage = setid_collector()
             setid_assessment = setid_assessor(setid_coverage)
             sections.append(filesystem_section_builder(file_results, fs_assessment, setid_coverage, setid_assessment))
@@ -269,7 +228,7 @@ class ScanOrchestrator:
             review_items += 1
 
         coverage = AssessmentCoverage.PARTIAL if review_items else AssessmentCoverage.COMPLETE
-        self._emit(ScanStage.COMPLETED, "Full Linux assessment completed", completed=6, total=6)
+        self._emit(ScanStage.COMPLETED, "Full Linux assessment completed", completed=5, total=5)
         return self._result(
             sections=tuple(sections),
             findings=tuple(findings),

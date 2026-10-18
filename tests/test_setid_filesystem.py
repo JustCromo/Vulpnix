@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
@@ -347,8 +348,8 @@ class SetIdCliTests(unittest.TestCase):
         with (
             patch_supplementary_collectors(app),
             patch.object(host_area, "collect_system_info", return_value=SystemInfo()),
-            patch.object(app, "collect_local_users", return_value=()),
-            patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(users_area, "collect_local_users", return_value=()),
+            patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "collect_setid_files", return_value=coverage),
             patch.object(app, "collect_services", return_value=()),

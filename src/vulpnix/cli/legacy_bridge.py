@@ -103,6 +103,116 @@ def _hardening_section(result: AreaResult, details: bool) -> ReportSection:
     )
 
 
+def _plural(count: int, singular: str = "account", plural: str = "accounts") -> str:
+    return singular if count == 1 else plural
+
+
+def _users_section(result: AreaResult, details: bool) -> ReportSection:
+    """Assessment, review and details blocks, as the legacy users view showed them."""
+    facts = {fact.key: fact for fact in result.facts}
+    uid_zero = tuple(facts["uid0_accounts"].raw or ())
+    additional = tuple(name for name in uid_zero if name != "root")
+    privileged = tuple(facts["privileged_accounts"].raw or ())
+    sudo_accounts = tuple(facts["sudo_accounts"].raw or ())
+    sudo_without = tuple(facts["sudo_no_privileges"].raw or ())
+
+    assessment: list[str] = []
+    if not uid_zero:
+        assessment.append("No UID 0 accounts detected")
+    elif not additional:
+        assessment.append("✓ Only one UID 0 account detected: root")
+    else:
+        assessment.append("Additional UID 0 accounts detected: " + ", ".join(additional))
+    if privileged:
+        assessment.append(
+            f"✓ Privileged access verified for {len(privileged)} {_plural(len(privileged))}"
+        )
+    else:
+        assessment.append("No privileged accounts verified")
+    if sudo_accounts:
+        assessment.append(
+            f"✓ Sudo access verified for {len(sudo_accounts)} {_plural(len(sudo_accounts))}"
+        )
+    elif sudo_without:
+        assessment.append(
+            f"No sudo access verified for {len(sudo_without)} "
+            f"inspected {_plural(len(sudo_without))}"
+        )
+
+    review: list[str] = []
+    if additional:
+        review.append(
+            "Review authorization for additional UID 0 accounts: " + ", ".join(additional)
+        )
+    if any(gap.key.startswith("sudo_unavailable:") for gap in result.gaps):
+        review.append("sudo is unavailable; sudo privileges could not be evaluated")
+    causes: dict[str, int] = {}
+    for gap in result.gaps:
+        if gap.key.startswith("sudo_not_assessed:"):
+            causes[gap.cause or gap.message] = causes.get(gap.cause or gap.message, 0) + 1
+    for cause, count in causes.items():
+        review.append(f"{count} {_plural(count)}: {cause}")
+    state_unknown = sum(record.get("account_state") is None for record in result.records)
+    if state_unknown:
+        review.append(
+            f"{state_unknown} {'account could' if state_unknown == 1 else 'accounts could'} "
+            "not be evaluated for account state"
+        )
+    groups_unknown = sum(record.get("groups") is None for record in result.records)
+    if groups_unknown:
+        review.append(
+            f"Group membership unavailable for {groups_unknown} {_plural(groups_unknown)}"
+        )
+    review.extend(gap.message for gap in result.gaps if gap.key == "sudo-collection-failed")
+    if not review:
+        review.append("No unresolved account information")
+
+    if details:
+        privilege_labels = {True: "yes", False: "no", None: "NOT_ASSESSED"}
+        inventory = tuple(
+            " · ".join((
+                record.label,
+                f"UID {record.get('uid')}",
+                f"GID {record.get('gid')}",
+                "groups: " + (
+                    ", ".join(record.get("groups"))
+                    if record.get("groups") is not None else "Unavailable"
+                ),
+                "shell: " + (record.get("shell") or "Unavailable"),
+                "privileged: " + privilege_labels[record.get("privileged")],
+                "account state: " + (record.get("account_state") or "NOT_ASSESSED"),
+                record.get("sudo"),
+            ))
+            for record in result.records
+        )
+        detail_block = ReportBlock(
+            title="ACCOUNT INVENTORY",
+            lines=inventory or ("No local accounts found.",),
+        )
+    else:
+        detail_block = ReportBlock(
+            title="DETAILS",
+            lists=(
+                ("UID 0", uid_zero),
+                ("Privileged", privileged),
+                ("Sudo access", sudo_accounts),
+            ),
+        )
+    return ReportSection(
+        title=result.title,
+        facts=(
+            ("Local accounts", str(facts["local_accounts"].raw)),
+            ("UID 0 accounts", str(len(uid_zero))),
+            ("Privileged accounts", str(len(privileged))),
+        ),
+        blocks=(
+            ReportBlock("ASSESSMENT", lines=tuple(assessment)),
+            ReportBlock("REVIEW", lines=tuple(review)),
+            detail_block,
+        ),
+    )
+
+
 def _host_section(result: AreaResult, details: bool) -> ReportSection:
     """The five identity rows the legacy view showed (environment is not shown)."""
     facts = {fact.key: fact for fact in result.facts}
@@ -140,6 +250,7 @@ _LEGACY_SECTIONS: dict[str, Callable[[AreaResult, bool], ReportSection]] = {
     "ssh_host_keys": _ssh_host_keys_section,
     "host": _host_section,
     "hardening": _hardening_section,
+    "users": _users_section,
 }
 
 

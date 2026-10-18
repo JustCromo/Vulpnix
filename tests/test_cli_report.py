@@ -8,6 +8,7 @@ from contextlib import redirect_stdout
 from unittest.mock import MagicMock, patch
 
 from vulpnix.cli import app
+from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
@@ -290,8 +291,8 @@ class FullScanWidthTests(unittest.TestCase):
             ),
             patch.object(app, "terminal_size", return_value=(width, 40)),
             patch.object(host_area, "collect_system_info", return_value=sample_report().host),
-            patch.object(app, "collect_local_users", return_value=()),
-            patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(users_area, "collect_local_users", return_value=()),
+            patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(
                 app,

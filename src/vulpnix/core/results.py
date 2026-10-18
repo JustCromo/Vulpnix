@@ -13,6 +13,9 @@ from enum import Enum
 from vulpnix.findings import Finding, FindingStatus
 
 
+FieldValue = str | int | float | bool | tuple[str, ...] | None
+
+
 class AreaStatus(Enum):
     """How much of an area could actually be collected and evaluated."""
 
@@ -40,7 +43,7 @@ class Fact:
     label: str
     value: str
     status: FindingStatus | None = None
-    raw: str | int | float | bool | None = None
+    raw: str | int | float | bool | tuple[str, ...] | None = None
     detail: str | None = None
 
 
@@ -49,11 +52,37 @@ class Gap:
     """Something the area could not verify, and why.
 
     Gaps make an area PARTIAL. They are not vulnerabilities and are never
-    converted into findings or risk scores.
+    converted into findings or risk scores. ``subject`` names what the gap is
+    about (an account, a path) and ``cause`` the shared reason, so renderers can
+    group "12 accounts: permission denied" instead of listing every line.
     """
 
     key: str
     message: str
+    subject: str | None = None
+    cause: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class Record:
+    """One inventoried item (account, service, socket, mount...) with named fields.
+
+    Facts describe the area as a whole; records describe each of its items.
+    Field values are observed data, not display text: lists stay lists, missing
+    values stay ``None``. ``status`` is set only when the area judged the item.
+    """
+
+    kind: str
+    key: str
+    label: str
+    fields: tuple[tuple[str, FieldValue], ...] = ()
+    status: FindingStatus | None = None
+
+    def get(self, name: str, default: FieldValue = None) -> FieldValue:
+        for field_name, value in self.fields:
+            if field_name == name:
+                return value
+        return default
 
 
 @dataclass(frozen=True, slots=True)
@@ -69,6 +98,7 @@ class AreaResult:
     status: AreaStatus
     findings: tuple[Finding, ...] = ()
     facts: tuple[Fact, ...] = ()
+    records: tuple[Record, ...] = ()
     gaps: tuple[Gap, ...] = ()
     notes: tuple[str, ...] = field(default=())
     """Scope limits that hold by design (e.g. "global options only").

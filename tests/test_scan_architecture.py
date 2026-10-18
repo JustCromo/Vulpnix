@@ -1,11 +1,10 @@
 import unittest
-from unittest.mock import Mock
 
 from vulpnix.cli.report import ReportSection
 from vulpnix.cli.summary import AssessmentCoverage
 from vulpnix.scan.orchestrator import ScanOrchestrator
+from vulpnix.scan.result import ScanResult
 from vulpnix.scan.progress import ScanStage
-from vulpnix.scan.privilege import PrivilegeContext
 
 
 class ScanArchitectureTests(unittest.TestCase):
@@ -60,23 +59,6 @@ class ScanArchitectureTests(unittest.TestCase):
 
         self.assertEqual(events[-1].stage, ScanStage.ERROR)
 
-    def test_users_lifecycle_is_ordered_and_returns_privilege_context(self):
-        events = []
-        collector = Mock(return_value=())
-        sudo = Mock(return_value=())
-        builder = Mock(return_value=ReportSection("USERS"))
-        result = ScanOrchestrator(progress_callback=events.append).run_users(
-            users_collector=collector,
-            sudo_collector=sudo,
-            section_builder=builder,
-        )
-        self.assertEqual(
-            [event.stage for event in events],
-            [ScanStage.STARTING, ScanStage.COLLECTING, ScanStage.COLLECTING, ScanStage.ASSESSING, ScanStage.COMPLETED],
-        )
-        self.assertIsInstance(result.privilege, PrivilegeContext)
-        self.assertEqual(result.sections[0].title, "USERS")
-
     def test_filesystem_partial_coverage_requires_review(self):
         from vulpnix.models import CoverageStatus, FilesystemCoverage
         from vulpnix.rules.filesystem import FilesystemAssessment, SetIdAssessment
@@ -95,11 +77,9 @@ class ScanArchitectureTests(unittest.TestCase):
     def test_full_scan_has_all_sections_and_final_coverage(self):
         result = ScanOrchestrator().run_full_scan(
             service_section_builder=lambda _: ReportSection("SERVICES"),
-            users_section_builder=lambda *_: ReportSection("USERS"),
+            users_result=lambda: ScanResult(sections=(ReportSection("USERS"),)),
             filesystem_section_builder=lambda *_: ReportSection("FILESYSTEM"),
             services_collector=lambda: (),
-            users_collector=lambda: (),
-            sudo_collector=lambda _: (),
             sensitive_file_collector=lambda: (),
             sensitive_file_assessor=lambda _: __import__("vulpnix.rules.filesystem", fromlist=["FilesystemAssessment"]).FilesystemAssessment((), (), ()),
             setid_collector=lambda: __import__("vulpnix.models", fromlist=["FilesystemCoverage", "CoverageStatus"]).FilesystemCoverage((), __import__("vulpnix.models", fromlist=["CoverageStatus"]).CoverageStatus.COLLECTED, ("/usr",), 0, 0.0),

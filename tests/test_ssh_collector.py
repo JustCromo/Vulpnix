@@ -5,6 +5,7 @@ from contextlib import redirect_stdout
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
@@ -169,8 +170,8 @@ class UnsupportedSSHCLIStatusTests(unittest.TestCase):
         with (
             patch_supplementary_collectors(app),
             patch.object(host_area, "collect_system_info", return_value=SystemInfo()),
-            patch.object(app, "collect_local_users", return_value=()),
-            patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(users_area, "collect_local_users", return_value=()),
+            patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "collect_services", return_value=()),
             patch.object(ssh_area, "collect_ssh_config", side_effect=unsupported),
@@ -271,8 +272,8 @@ class SSHCommandTests(unittest.TestCase):
         output = io.StringIO()
         with (
             patch.object(host_area, "collect_system_info", return_value=info) as host,
-            patch.object(app, "collect_local_users", return_value=()),
-            patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(users_area, "collect_local_users", return_value=()),
+            patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "collect_services", return_value=()) as services,
             patch.object(ssh_area, "collect_ssh_config", return_value=ssh_config) as ssh,

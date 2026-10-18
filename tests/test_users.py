@@ -9,6 +9,7 @@ import unittest
 from unittest.mock import patch
 
 from vulpnix.cli import app
+from vulpnix.areas.users import area as users_area
 from vulpnix.areas.host import area as host_area
 from vulpnix.areas.ssh import area as ssh_area
 from vulpnix_test_support import patch_supplementary_collectors
@@ -135,9 +136,9 @@ class UsersCLItests(unittest.TestCase):
             if user.username != "service"
         )
         with (
-            patch.object(app, "collect_local_users", return_value=users),
+            patch.object(users_area, "collect_local_users", return_value=users),
             patch.object(
-                app,
+                users_area,
                 "collect_sudo_privileges",
                 return_value=(
                     SudoPrivilege("root", SudoPrivilegeStatus.PRIVILEGES_FOUND,
@@ -176,8 +177,8 @@ class UsersCLItests(unittest.TestCase):
         output = io.StringIO()
         users = parse_local_users(PASSWD, GROUP)
         with (
-            patch.object(app, "collect_local_users", return_value=users),
-            patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(users_area, "collect_local_users", return_value=users),
+            patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
         ):
@@ -209,8 +210,8 @@ class UsersCLItests(unittest.TestCase):
         )
 
         with (
-            patch.object(app, "collect_local_users", return_value=users),
-            patch.object(app, "collect_sudo_privileges", return_value=sudo_results),
+            patch.object(users_area, "collect_local_users", return_value=users),
+            patch.object(users_area, "collect_sudo_privileges", return_value=sudo_results),
             patch.object(app, "terminal_size", return_value=(160, 30)),
             contextlib.redirect_stdout(output),
         ):
@@ -225,8 +226,8 @@ class UsersCLItests(unittest.TestCase):
     def test_additional_uid_zero_accounts_are_reviewed_not_marked_as_findings(self) -> None:
         output = io.StringIO()
         with (
-            patch.object(app, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
-            patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(users_area, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
+            patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_sensitive_file_metadata", return_value=()),
             patch.object(app, "terminal_size", return_value=(100, 30)),
             contextlib.redirect_stdout(output),
@@ -246,8 +247,8 @@ class UsersCLItests(unittest.TestCase):
         with (
             patch_supplementary_collectors(app),
             patch.object(host_area, "collect_system_info", return_value=SystemInfo()),
-            patch.object(app, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
-            patch.object(app, "collect_sudo_privileges", return_value=()),
+            patch.object(users_area, "collect_local_users", return_value=parse_local_users(PASSWD, GROUP)),
+            patch.object(users_area, "collect_sudo_privileges", return_value=()),
             patch.object(app, "collect_services", return_value=()),
             patch.object(
                 ssh_area,
