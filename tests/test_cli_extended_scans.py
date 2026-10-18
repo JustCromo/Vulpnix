@@ -7,6 +7,7 @@ from unittest.mock import patch
 
 from vulpnix.cli import app
 from vulpnix.areas.ssh import area as ssh_area
+from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
 from vulpnix.findings import FindingStatus
 from vulpnix.models import (
     ListeningEndpoint,
@@ -179,7 +180,7 @@ class ExtendedScanCommandTests(unittest.TestCase):
         )
         rule_patches = (
             patch.object(ssh_area, "collect_ssh_config", return_value=config),
-            patch.object(app, "collect_ssh_host_key_metadata", return_value=keys),
+            patch.object(ssh_host_keys_area, "collect_ssh_host_key_metadata", return_value=keys),
             patch.object(ssh_area, "check_ssh_root_login", return_value=()),
             patch.object(ssh_area, "check_ssh_password_authentication", return_value=()),
             patch.object(ssh_area, "check_ssh_empty_passwords", return_value=()),

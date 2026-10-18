@@ -23,7 +23,6 @@ from vulpnix.collectors import (
     collect_network_snapshot,
     collect_network_interfaces,
     collect_firewall_snapshot,
-    collect_ssh_host_key_metadata,
     collect_service_unit_file_metadata,
 )
 from vulpnix.collectors.package_audit import collect_package_audit
@@ -46,7 +45,6 @@ from vulpnix.models import (
     FirewallSnapshot,
     NetworkInterfaceSnapshot,
     NetworkSnapshot,
-    SSHHostKeyAssessment,
     UnitFileAssessment,
 )
 from vulpnix import __version__
@@ -84,7 +82,7 @@ from vulpnix.rules.filesystem import (
     assess_setid_files,
 )
 from vulpnix.rules import verified_privileged_accounts
-from vulpnix.areas.ssh import SSHConfigArea
+from vulpnix.areas.ssh import SSHConfigArea, SSHHostKeyArea
 from vulpnix.cli.legacy_bridge import area_result_to_scan_result
 from vulpnix.context import current_execution_context
 from vulpnix.engine import run_area
@@ -683,31 +681,6 @@ def _firewall_policy_report_section(
     )
 
 
-def _ssh_host_key_report_section(assessment: SSHHostKeyAssessment, *, details: bool = False) -> ReportSection:
-    checks = assessment.checks
-    passed = sum(item.status is FindingStatus.PASS for item in checks)
-    failed = sum(item.status is FindingStatus.FAIL for item in checks)
-    review = sum(item.status is FindingStatus.REVIEW for item in checks)
-    unavailable = sum(item.status in {FindingStatus.NOT_ASSESSED, FindingStatus.ERROR} for item in checks)
-    attention = tuple(item for item in checks if item.status is not FindingStatus.PASS)
-    if details:
-        shown = checks
-    else:
-        shown = attention[:6]
-    items = tuple(f"[{item.status.value}] {item.evidence}" for item in shown)
-    if not items:
-        items = ("Host-key metadata checks passed; key contents were not read.",)
-    if not details and len(attention) > len(shown):
-        items += (f"{len(attention) - len(shown)} additional item(s) omitted; use --details to list them.",)
-    return ReportSection(
-        title="SSH HOST-KEY METADATA",
-        facts=(("Keys/observations", str(len(checks))), ("Metadata checks passed", str(passed)), ("Verified issues", str(failed)), ("Review", str(review)), ("Unavailable/error", str(unavailable))),
-        items=items,
-        items_label="Host-key metadata:",
-        footer="Only path, file type, owner and mode are inspected. Private-key contents are never read.",
-    )
-
-
 def _unit_file_report_section(assessment: UnitFileAssessment, *, details: bool = False) -> ReportSection:
     checks = assessment.checks
     passed = sum(item.status is FindingStatus.PASS for item in checks)
@@ -878,17 +851,21 @@ def _run_network_result(*, details: bool = False):
     return _combine_results(socket_result, interface_result, firewall_result)
 
 
+def _run_area_result(area, *, scope, details=False):
+    """Run one area through the Area contract and adapt it for the legacy report."""
+    ctx = current_execution_context()
+    return area_result_to_scan_result(
+        run_area(area, ctx),
+        privilege=ctx.privilege,
+        scope=scope,
+        details=details,
+    )
+
+
 def _run_ssh_host_key_result(*, details: bool = False):
-    try:
-        return _make_orchestrator().run_ssh_host_keys(
-            collector=collect_ssh_host_key_metadata,
-            section_builder=lambda assessment: _ssh_host_key_report_section(assessment, details=details),
-        )
-    except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-        return _make_orchestrator()._result(
-            sections=(ReportSection("SSH HOST-KEY METADATA", status="NOT_ASSESSED", message=f"Host-key metadata is unavailable: {_display_value(str(error))}"),),
-            scope=("SSH host-key metadata",), coverage=AssessmentCoverage.PARTIAL, review_items=1,
-        )
+    return _run_area_result(
+        SSHHostKeyArea(), scope=("SSH host-key metadata",), details=details
+    )
 
 
 def _run_unit_file_result(services: tuple[Service, ...], *, details: bool = False):
@@ -1586,13 +1563,7 @@ def _show_filesystem_assessment(*, detailed: bool = False) -> None:
 
 
 def _run_ssh_config_result():
-    """Run the SSH area through the Area contract and adapt it for the legacy report."""
-    ctx = current_execution_context()
-    return area_result_to_scan_result(
-        run_area(SSHConfigArea(), ctx),
-        privilege=ctx.privilege,
-        scope=("SSH configuration",),
-    )
+    return _run_area_result(SSHConfigArea(), scope=("SSH configuration",))
 
 
 def _show_ssh_assessment(*, detailed: bool = False) -> int:

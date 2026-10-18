@@ -6,6 +6,7 @@ from unittest.mock import patch
 
 from vulpnix.cli import app
 from vulpnix.areas.ssh import area as ssh_area
+from vulpnix.areas.ssh import host_keys as ssh_host_keys_area
 from vulpnix_test_support import patch_supplementary_collectors
 from vulpnix.collectors.ssh import (
     SSHCommandError,
@@ -300,7 +301,7 @@ class SSHCommandTests(unittest.TestCase):
             patch.object(ssh_area, "check_ssh_password_authentication", return_value=()),
             patch.object(ssh_area, "check_ssh_empty_passwords", return_value=()),
             patch.object(ssh_area, "check_ssh_public_key_authentication", return_value=()),
-            patch.object(app, "collect_ssh_host_key_metadata", return_value=()),
+            patch.object(ssh_host_keys_area, "collect_ssh_host_key_metadata", return_value=()),
             redirect_stdout(output),
         ):
             app._show_ssh_assessment()

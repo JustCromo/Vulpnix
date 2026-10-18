@@ -15,7 +15,6 @@ from vulpnix.collectors import (
 )
 from vulpnix.collectors.hardening import collect_sysctl_observations
 from vulpnix.collectors.network import collect_network_snapshot
-from vulpnix.collectors.ssh_keys import collect_ssh_host_key_metadata
 from vulpnix.collectors.systemd_security import collect_service_unit_file_metadata
 from vulpnix.findings import Finding
 from vulpnix.parsers.systemd import UNIT_FILE_NON_BOOLEAN_STATES
@@ -29,8 +28,6 @@ from vulpnix.models import (
     User,
     HardeningAssessment,
     NetworkSnapshot,
-    SSHHostKeyAssessment,
-    SSHHostKeyObservation,
     UnitFileAssessment,
     UnitFileObservation,
 )
@@ -41,7 +38,6 @@ from vulpnix.rules.filesystem import (
     assess_setid_files,
 )
 from vulpnix.rules.hardening import assess_kernel_hardening
-from vulpnix.rules.ssh_keys import assess_ssh_host_key_metadata
 from vulpnix.rules.systemd_security import assess_systemd_unit_metadata
 from vulpnix.scan.privilege import current_privilege_context
 from vulpnix.scan.progress import ScanProgress, ScanStage
@@ -60,7 +56,6 @@ ServiceSectionBuilder = Callable[[tuple[Service, ...]], ReportSection]
 HostSectionBuilder = Callable[[SystemInfo], ReportSection]
 HardeningSectionBuilder = Callable[[HardeningAssessment], ReportSection]
 NetworkSectionBuilder = Callable[[NetworkSnapshot], ReportSection]
-SSHHostKeySectionBuilder = Callable[[SSHHostKeyAssessment], ReportSection]
 UnitFileSectionBuilder = Callable[[UnitFileAssessment], ReportSection]
 
 
@@ -235,34 +230,6 @@ class ScanOrchestrator:
             scope=("listening sockets", "local bind scope"),
             coverage=AssessmentCoverage.PARTIAL if incomplete else AssessmentCoverage.COMPLETE,
             review_items=max(len(snapshot.review), 1 if bool(snapshot.endpoints) and not snapshot.process_attribution_complete else 0),
-        )
-
-    def run_ssh_host_keys(
-        self,
-        *,
-        section_builder: SSHHostKeySectionBuilder,
-        collector: Callable[[], tuple[SSHHostKeyObservation, ...]] = collect_ssh_host_key_metadata,
-    ) -> ScanResult:
-        """Assess SSH host-key ownership and modes without reading key material."""
-        self._emit(ScanStage.STARTING, "Starting SSH host-key metadata assessment")
-        try:
-            self._emit(ScanStage.COLLECTING, "Inspecting SSH host-key metadata")
-            observations = collector()
-            self._emit(ScanStage.ASSESSING, "Assessing key ownership and permissions")
-            assessment = assess_ssh_host_key_metadata(observations)
-            section = section_builder(assessment)
-        except (OSError, subprocess.SubprocessError, UnicodeError, ValueError) as error:
-            self._emit(ScanStage.ERROR, f"SSH host-key assessment failed: {error}")
-            raise
-        self._emit(ScanStage.COMPLETED, "SSH host-key metadata assessment completed")
-        incomplete = assessment.incomplete_checks
-        unresolved = sum(finding.status.name in {"NOT_ASSESSED", "ERROR"} for finding in assessment.findings)
-        return self._result(
-            sections=(section,),
-            findings=assessment.findings,
-            scope=("SSH host-key metadata",),
-            coverage=AssessmentCoverage.PARTIAL if incomplete else AssessmentCoverage.COMPLETE,
-            review_items=max(0, incomplete - unresolved),
         )
 
     def run_service_unit_security(
